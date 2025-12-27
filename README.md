@@ -24,6 +24,10 @@ python -m space_dynamics_workbench.app.main
 - Toggle r_OP, r_OC, and r_CP overlays to visualize the textbook vectors.
 - In CoM frame, points are rendered relative to C (C is at the origin; O is shown as a marker).
 
+## Interaction controls
+- Pan the camera: hold Space and drag with LMB.
+- Move a point: hold Ctrl and drag with LMB near a point.
+
 Run tests
 ```bash
 pytest
