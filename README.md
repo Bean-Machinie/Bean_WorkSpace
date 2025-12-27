@@ -24,6 +24,19 @@ Run tests
 pytest
 ```
 
+## Launching via double-click (Windows)
+Prerequisites: the `.venv` exists and dependencies are installed (see Setup).
+
+- Double-click `run_app.bat` to launch the app.
+- If it reports `.venv` missing, run:
+  `py -m venv .venv`
+  `.\.venv\Scripts\Activate.ps1`
+  `pip install -e .[dev]`
+- Optional PowerShell launcher:
+  `powershell -ExecutionPolicy Bypass -File .\run_app.ps1`
+
+Note: the launcher keeps the console open only when an error occurs, so you can read messages.
+
 ## Adding a new scenario
 1) Create a new module in `src/space_dynamics_workbench/core/scenarios/` implementing the Scenario protocol.
 2) Register it with the scenario registry.
