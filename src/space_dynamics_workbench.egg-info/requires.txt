@@ -7,3 +7,6 @@ pytest
 
 [gl]
 PyOpenGL
+
+[mesh]
+trimesh
