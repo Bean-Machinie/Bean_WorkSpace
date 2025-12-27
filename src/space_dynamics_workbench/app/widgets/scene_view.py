@@ -57,7 +57,14 @@ class SceneView(Renderer):
         self._plot.setXRange(x_min, x_max, padding=0.0)
         self._plot.setYRange(y_min, y_max, padding=0.0)
 
-    def set_scene(self, frame_vectors: FrameVectors, overlays: OverlayOptions, selected_id: str | None) -> None:
+    def set_scene(
+        self,
+        frame_vectors: FrameVectors,
+        overlays: OverlayOptions,
+        selected_id: str | None,
+        selected_component_id: str | None = None,
+    ) -> None:
+        _ = selected_component_id
         positions = list(frame_vectors.positions)
         self._entity_ids = list(frame_vectors.entity_ids)
         self._masses = np.asarray(frame_vectors.masses, dtype=float) if frame_vectors.masses else np.zeros((0,), dtype=float)

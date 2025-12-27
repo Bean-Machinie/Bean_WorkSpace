@@ -33,6 +33,9 @@ python -m space_dynamics_workbench.app.main
 - Install OpenGL extras:
   `pip install -e .[gl]`
 - Enable via the "Renderer" dropdown in View Options.
+- Use the 3D grid toggles (XY/XZ/YZ) in View Options for spatial reference.
+- Click "Frame Scene" in the toolbar to center the camera on the current points.
+- Select a rigid-body component row in the Inspector to highlight it in 3D.
 
 Run tests
 ```bash

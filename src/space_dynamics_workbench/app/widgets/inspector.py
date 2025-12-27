@@ -11,11 +11,13 @@ from ...core.model import PointMass, RigidBody
 class InspectorPanel(QtWidgets.QGroupBox):
     point_mass_updated = QtCore.Signal(str, float, object, object)
     rigid_body_updated = QtCore.Signal(str, object, object, object)
+    rigid_component_selected = QtCore.Signal(str, object)
 
     def __init__(self, parent: QtWidgets.QWidget | None = None) -> None:
         super().__init__("Inspector", parent)
         self._entity_id: Optional[str] = None
         self._block_updates = False
+        self._block_component_updates = False
 
         self._layout = QtWidgets.QFormLayout(self)
         self._id_field = QtWidgets.QLineEdit()
@@ -52,7 +54,8 @@ class InspectorPanel(QtWidgets.QGroupBox):
         self._components_table.setHorizontalHeaderLabels(["ID", "Mass", "x", "y", "z"])
         self._components_table.horizontalHeader().setStretchLastSection(True)
         self._components_table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
-        self._components_table.setSelectionMode(QtWidgets.QAbstractItemView.NoSelection)
+        self._components_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
+        self._components_table.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
 
         self._layout.addRow("ID", self._id_field)
         self._layout.addRow("Type", self._type_field)
@@ -90,6 +93,7 @@ class InspectorPanel(QtWidgets.QGroupBox):
         self._omega_x.valueChanged.connect(self._emit_rigid_update)
         self._omega_y.valueChanged.connect(self._emit_rigid_update)
         self._omega_z.valueChanged.connect(self._emit_rigid_update)
+        self._components_table.itemSelectionChanged.connect(self._emit_component_selected)
 
         self._point_fields = [
             self._mass_field,
@@ -123,11 +127,13 @@ class InspectorPanel(QtWidgets.QGroupBox):
 
     def set_entity(self, entity: PointMass | RigidBody | None) -> None:
         self._block_updates = True
+        self._block_component_updates = True
         if entity is None:
             self._entity_id = None
             self._id_field.setText("")
             self._type_field.setText("")
             self._components_table.setRowCount(0)
+            self._components_table.clearSelection()
             self._set_group_visible(self._point_fields, False)
             self._set_group_visible(self._rigid_fields, False)
             self.setEnabled(False)
@@ -141,6 +147,8 @@ class InspectorPanel(QtWidgets.QGroupBox):
                 self._pos_y.setValue(float(entity.position[1]))
                 self._vel_x.setValue(float(entity.velocity[0]))
                 self._vel_y.setValue(float(entity.velocity[1]))
+                self._components_table.setRowCount(0)
+                self._components_table.clearSelection()
                 self._set_group_visible(self._point_fields, True)
                 self._set_group_visible(self._rigid_fields, False)
             else:
@@ -157,10 +165,12 @@ class InspectorPanel(QtWidgets.QGroupBox):
                 self._omega_z.setValue(float(entity.omega_world[2]))
                 self._orientation_field.setText(self._format_quaternion(entity.orientation))
                 self._populate_components_table(entity)
+                self._components_table.clearSelection()
                 self._set_group_visible(self._point_fields, False)
                 self._set_group_visible(self._rigid_fields, True)
             self.setEnabled(True)
         self._block_updates = False
+        self._block_component_updates = False
 
     def _emit_update(self) -> None:
         if self._block_updates or self._entity_id is None:
@@ -214,6 +224,7 @@ class InspectorPanel(QtWidgets.QGroupBox):
                 4,
                 QtWidgets.QTableWidgetItem(f"{component.position_body[2]:.6f}"),
             )
+        self._components_table.resizeColumnsToContents()
 
     def _set_group_visible(self, widgets: list[QtWidgets.QWidget], visible: bool) -> None:
         for widget in widgets:
@@ -228,3 +239,17 @@ class InspectorPanel(QtWidgets.QGroupBox):
         if values.size != 4:
             return ""
         return f"[{values[0]:.6f}, {values[1]:.6f}, {values[2]:.6f}, {values[3]:.6f}]"
+
+    def _emit_component_selected(self) -> None:
+        if self._block_component_updates or self._entity_id is None:
+            return
+        selected = self._components_table.selectedItems()
+        if not selected:
+            self.rigid_component_selected.emit(self._entity_id, None)
+            return
+        row = selected[0].row()
+        component_item = self._components_table.item(row, 0)
+        if component_item is None:
+            self.rigid_component_selected.emit(self._entity_id, None)
+            return
+        self.rigid_component_selected.emit(self._entity_id, component_item.text())

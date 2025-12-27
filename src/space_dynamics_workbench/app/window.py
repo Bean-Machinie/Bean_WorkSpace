@@ -74,6 +74,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self._load_action = QtGui.QAction("Load Scene", self)
         self._load_action.triggered.connect(self._load_scene)
 
+        self._frame_action = QtGui.QAction("Frame Scene", self)
+        self._frame_action.triggered.connect(self._frame_scene)
+
         self._scenario_combo = QtWidgets.QComboBox()
         for scenario in scenario_registry.all():
             self._scenario_combo.addItem(scenario.name, scenario.scenario_id)
@@ -88,12 +91,15 @@ class MainWindow(QtWidgets.QMainWindow):
         toolbar.addWidget(QtWidgets.QLabel("Scenario:"))
         toolbar.addWidget(self._scenario_combo)
         toolbar.addSeparator()
+        toolbar.addAction(self._frame_action)
+        toolbar.addSeparator()
         toolbar.addAction(self._save_action)
         toolbar.addAction(self._load_action)
 
         self._connect_renderer(self._renderer)
         self._inspector.point_mass_updated.connect(self._on_point_mass_updated)
         self._inspector.rigid_body_updated.connect(self._on_rigid_body_updated)
+        self._inspector.rigid_component_selected.connect(self._on_rigid_component_selected)
         self._view_options.frame_changed.connect(self._on_frame_changed)
         self._view_options.overlays_changed.connect(self._on_overlays_changed)
         self._view_options.renderer_changed.connect(self._on_renderer_changed)
@@ -102,6 +108,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._scenario_id: str | None = None
         self._initial_scene: SceneData | None = None
         self._selected_entity_id: Optional[str] = None
+        self._selected_component_id: Optional[str] = None
         self._frame_choice: FrameChoice = FrameChoice.WORLD
         self._overlays = OverlayOptions()
         self._frame_vectors = None
@@ -120,11 +127,13 @@ class MainWindow(QtWidgets.QMainWindow):
         defaults = scenario.ui_defaults()
         if defaults and defaults.view_range:
             self._renderer.set_view_range(defaults.view_range)
+        self._frame_scene_if_needed()
 
     def _set_simulation(self, sim: Simulation, scenario_id: str | None) -> None:
         self._simulation = sim
         self._scenario_id = scenario_id
         self._selected_entity_id = None
+        self._selected_component_id = None
         self._initial_scene = capture_scene(sim.entities, scenario_id=scenario_id)
         self._update_ui()
 
@@ -132,7 +141,12 @@ class MainWindow(QtWidgets.QMainWindow):
         if self._simulation is None:
             return
         self._frame_vectors = compute_frame_vectors(self._simulation.entities, self._frame_choice)
-        self._renderer.set_scene(self._frame_vectors, self._overlays, self._selected_entity_id)
+        self._renderer.set_scene(
+            self._frame_vectors,
+            self._overlays,
+            self._selected_entity_id,
+            self._selected_component_id,
+        )
         self._invariants.update_values(self._simulation.entities)
         entity, _ = self._resolve_entity(self._selected_entity_id)
         self._inspector.set_entity(entity)
@@ -163,7 +177,13 @@ class MainWindow(QtWidgets.QMainWindow):
         self._update_ui()
 
     def _on_entity_selected(self, entity_id: str) -> None:
-        self._selected_entity_id = entity_id
+        entity, component = self._resolve_entity(entity_id)
+        if component is not None and isinstance(entity, RigidBody):
+            self._selected_entity_id = entity.entity_id
+            self._selected_component_id = entity_id
+        else:
+            self._selected_entity_id = entity_id
+            self._selected_component_id = None
         self._update_ui()
 
     def _on_entity_dragged(self, entity_id: str, new_position: np.ndarray) -> None:
@@ -215,6 +235,18 @@ class MainWindow(QtWidgets.QMainWindow):
         entity.omega_world = np.array(omega_world, dtype=float)
         self._update_ui()
 
+    def _on_rigid_component_selected(self, entity_id: str, component_id: object) -> None:
+        if component_id is None:
+            self._selected_component_id = None
+            self._update_ui()
+            return
+        entity, _ = self._resolve_entity(entity_id)
+        if entity is None or not isinstance(entity, RigidBody):
+            return
+        self._selected_entity_id = entity_id
+        self._selected_component_id = entity.component_entity_id(str(component_id))
+        self._update_ui()
+
     def _reset_scene(self) -> None:
         if self._initial_scene is None:
             return
@@ -231,6 +263,7 @@ class MainWindow(QtWidgets.QMainWindow):
             sim = Simulation(entities=scene_copy.entities, dt=0.05, integrator=SymplecticEulerIntegrator())
         self._set_simulation(sim, scenario_id)
         self._select_scenario_in_combo(scenario_id)
+        self._frame_scene_if_needed()
 
     def _select_scenario_in_combo(self, scenario_id: str | None) -> None:
         self._scenario_combo.blockSignals(True)
@@ -277,6 +310,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._connect_renderer(renderer)
         self._renderer_stack.setCurrentWidget(renderer)
         self._update_ui()
+        self._frame_scene_if_needed()
 
     def _connect_renderer(self, renderer) -> None:
         renderer.entity_selected.connect(self._on_entity_selected)
@@ -327,3 +361,11 @@ class MainWindow(QtWidgets.QMainWindow):
         if self._simulation is None or entity_id is None:
             return None, None
         return resolve_entity_by_id(self._simulation.entities, entity_id)
+
+    def _frame_scene(self) -> None:
+        self._renderer.frame_scene()
+
+    def _frame_scene_if_needed(self) -> None:
+        if self._renderer is self._renderer_2d:
+            return
+        self._renderer.frame_scene()

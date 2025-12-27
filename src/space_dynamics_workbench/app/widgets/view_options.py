@@ -30,17 +30,31 @@ class ViewOptionsPanel(QtWidgets.QGroupBox):
         self._show_r_oc.setChecked(True)
         self._show_r_cp.setChecked(False)
 
+        self._show_grid_xy = QtWidgets.QCheckBox("Show Grid (XY)")
+        self._show_grid_xz = QtWidgets.QCheckBox("Show Grid (XZ)")
+        self._show_grid_yz = QtWidgets.QCheckBox("Show Grid (YZ)")
+        self._show_grid_xy.setChecked(True)
+        self._show_grid_xz.setChecked(False)
+        self._show_grid_yz.setChecked(False)
+
         layout.addRow("Reference Frame", self._frame_combo)
         layout.addRow("Renderer", self._renderer_combo)
         layout.addRow(self._show_r_op)
         layout.addRow(self._show_r_oc)
         layout.addRow(self._show_r_cp)
+        layout.addRow(QtWidgets.QLabel("3D View"))
+        layout.addRow(self._show_grid_xy)
+        layout.addRow(self._show_grid_xz)
+        layout.addRow(self._show_grid_yz)
 
         self._frame_combo.currentIndexChanged.connect(self._emit_frame)
         self._renderer_combo.currentIndexChanged.connect(self._emit_renderer)
         self._show_r_op.toggled.connect(self._emit_overlays)
         self._show_r_oc.toggled.connect(self._emit_overlays)
         self._show_r_cp.toggled.connect(self._emit_overlays)
+        self._show_grid_xy.toggled.connect(self._emit_overlays)
+        self._show_grid_xz.toggled.connect(self._emit_overlays)
+        self._show_grid_yz.toggled.connect(self._emit_overlays)
 
     def current_frame(self) -> FrameChoice:
         return self._frame_combo.currentData()
@@ -50,6 +64,9 @@ class ViewOptionsPanel(QtWidgets.QGroupBox):
             show_r_op=self._show_r_op.isChecked(),
             show_r_oc=self._show_r_oc.isChecked(),
             show_r_cp=self._show_r_cp.isChecked(),
+            show_grid_xy=self._show_grid_xy.isChecked(),
+            show_grid_xz=self._show_grid_xz.isChecked(),
+            show_grid_yz=self._show_grid_yz.isChecked(),
         )
 
     def set_renderer_availability(self, available: bool, message: str | None = None) -> None:
