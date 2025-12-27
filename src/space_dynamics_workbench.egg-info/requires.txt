@@ -4,3 +4,6 @@ pyqtgraph
 
 [dev]
 pytest
+
+[gl]
+PyOpenGL

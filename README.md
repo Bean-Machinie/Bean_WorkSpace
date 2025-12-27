@@ -28,6 +28,12 @@ python -m space_dynamics_workbench.app.main
 - Pan the camera: hold Space and drag with LMB.
 - Move a point: hold Ctrl and drag with LMB near a point.
 
+## 3D mode (experimental)
+- Optional backend using `pyqtgraph.opengl` (view-only, no 3D dragging yet).
+- Install OpenGL extras:
+  `pip install -e .[gl]`
+- Enable via the "Renderer" dropdown in View Options.
+
 Run tests
 ```bash
 pytest

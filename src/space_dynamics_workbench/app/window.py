@@ -11,7 +11,7 @@ from ..core.physics import FrameChoice, compute_frame_vectors, from_frame
 from ..core.scenarios import load_builtin_scenarios, scenario_registry
 from ..core.sim import Simulation, SymplecticEulerIntegrator
 from ..io.scene_format import SceneData, capture_scene, clone_scene, deserialize_scene, serialize_scene
-from .rendering import OverlayOptions, Renderer2D
+from .rendering import OverlayOptions, Renderer2D, Renderer3D, renderer3d_available, renderer3d_error
 from .widgets import InspectorPanel, InvariantsPanel, ViewOptionsPanel
 
 
@@ -23,10 +23,16 @@ class MainWindow(QtWidgets.QMainWindow):
 
         load_builtin_scenarios()
 
-        self._renderer = Renderer2D()
+        self._renderer_2d = Renderer2D()
+        self._renderer_3d: Renderer2D | Renderer3D | None = None
+        self._renderer = self._renderer_2d
         self._inspector = InspectorPanel()
         self._invariants = InvariantsPanel()
         self._view_options = ViewOptionsPanel()
+        self._view_options.set_renderer_availability(
+            renderer3d_available(),
+            renderer3d_error() or "Install 3D extras (PyOpenGL) to enable 3D mode.",
+        )
 
         side_layout = QtWidgets.QVBoxLayout()
         side_layout.addWidget(self._view_options)
@@ -38,8 +44,11 @@ class MainWindow(QtWidgets.QMainWindow):
         side_widget.setLayout(side_layout)
         side_widget.setMinimumWidth(280)
 
+        self._renderer_stack = QtWidgets.QStackedWidget()
+        self._renderer_stack.addWidget(self._renderer_2d)
+
         central_layout = QtWidgets.QHBoxLayout()
-        central_layout.addWidget(self._renderer, stretch=3)
+        central_layout.addWidget(self._renderer_stack, stretch=3)
         central_layout.addWidget(side_widget, stretch=1)
 
         central_widget = QtWidgets.QWidget()
@@ -82,11 +91,11 @@ class MainWindow(QtWidgets.QMainWindow):
         toolbar.addAction(self._save_action)
         toolbar.addAction(self._load_action)
 
-        self._renderer.entity_selected.connect(self._on_entity_selected)
-        self._renderer.entity_dragged.connect(self._on_entity_dragged)
+        self._connect_renderer(self._renderer)
         self._inspector.entity_updated.connect(self._on_entity_updated)
         self._view_options.frame_changed.connect(self._on_frame_changed)
         self._view_options.overlays_changed.connect(self._on_overlays_changed)
+        self._view_options.renderer_changed.connect(self._on_renderer_changed)
 
         self._simulation: Simulation | None = None
         self._scenario_id: str | None = None
@@ -217,6 +226,46 @@ class MainWindow(QtWidgets.QMainWindow):
     def _on_overlays_changed(self, overlays: OverlayOptions) -> None:
         self._overlays = overlays
         self._update_ui()
+
+    def _on_renderer_changed(self, mode: str) -> None:
+        if mode == "3d":
+            if not renderer3d_available():
+                return
+            renderer = self._ensure_renderer3d()
+        else:
+            renderer = self._renderer_2d
+        self._swap_renderer(renderer)
+
+    def _ensure_renderer3d(self) -> Renderer2D | Renderer3D:
+        if self._renderer_3d is None:
+            if Renderer3D is None:
+                return self._renderer_2d
+            self._renderer_3d = Renderer3D()
+            self._renderer_stack.addWidget(self._renderer_3d)
+        return self._renderer_3d
+
+    def _swap_renderer(self, renderer) -> None:
+        if renderer is self._renderer:
+            return
+        self._disconnect_renderer(self._renderer)
+        self._renderer = renderer
+        self._connect_renderer(renderer)
+        self._renderer_stack.setCurrentWidget(renderer)
+        self._update_ui()
+
+    def _connect_renderer(self, renderer) -> None:
+        renderer.entity_selected.connect(self._on_entity_selected)
+        renderer.entity_dragged.connect(self._on_entity_dragged)
+
+    def _disconnect_renderer(self, renderer) -> None:
+        try:
+            renderer.entity_selected.disconnect(self._on_entity_selected)
+        except (TypeError, RuntimeError):
+            pass
+        try:
+            renderer.entity_dragged.disconnect(self._on_entity_dragged)
+        except (TypeError, RuntimeError):
+            pass
 
     def _save_scene(self) -> None:
         if self._simulation is None:

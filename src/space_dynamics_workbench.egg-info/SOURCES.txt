@@ -11,15 +11,19 @@ src/space_dynamics_workbench/app/__init__.py
 src/space_dynamics_workbench/app/main.py
 src/space_dynamics_workbench/app/window.py
 src/space_dynamics_workbench/app/rendering/__init__.py
+src/space_dynamics_workbench/app/rendering/base.py
+src/space_dynamics_workbench/app/rendering/renderer3d.py
 src/space_dynamics_workbench/app/widgets/__init__.py
 src/space_dynamics_workbench/app/widgets/inspector.py
 src/space_dynamics_workbench/app/widgets/invariants_panel.py
 src/space_dynamics_workbench/app/widgets/scene_view.py
+src/space_dynamics_workbench/app/widgets/view_options.py
 src/space_dynamics_workbench/core/__init__.py
 src/space_dynamics_workbench/core/model/__init__.py
 src/space_dynamics_workbench/core/model/entities.py
 src/space_dynamics_workbench/core/physics/__init__.py
 src/space_dynamics_workbench/core/physics/com.py
+src/space_dynamics_workbench/core/physics/frames.py
 src/space_dynamics_workbench/core/scenarios/__init__.py
 src/space_dynamics_workbench/core/scenarios/base.py
 src/space_dynamics_workbench/core/scenarios/com_sandbox.py
@@ -29,4 +33,5 @@ src/space_dynamics_workbench/core/sim/simulation.py
 src/space_dynamics_workbench/io/__init__.py
 src/space_dynamics_workbench/io/scene_format.py
 tests/test_com_invariants.py
+tests/test_frames.py
 tests/test_scene_roundtrip.py

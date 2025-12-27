@@ -16,6 +16,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest"]
+gl = ["PyOpenGL"]
 
 [project.scripts]
 space-dynamics-workbench = "space_dynamics_workbench.app.main:main"
