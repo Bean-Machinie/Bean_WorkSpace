@@ -6,14 +6,14 @@ from typing import Any, Dict, Iterable, List
 
 import numpy as np
 
-from ..core.model import PointMass
+from ..core.model import PointMass, RigidBody, RigidBodyComponent, SimEntity
 
 SCENE_VERSION = 1
 
 
 @dataclass
 class SceneData:
-    entities: List[PointMass]
+    entities: List[SimEntity]
     scenario_id: str | None = None
     ui_state: Dict[str, Any] | None = None
     scene_version: int = SCENE_VERSION
@@ -24,16 +24,39 @@ def scene_to_dict(scene: SceneData) -> Dict[str, Any]:
         "scene_version": scene.scene_version,
         "scenario_id": scene.scenario_id,
         "entities": [
-            {
-                "entity_id": entity.entity_id,
-                "mass": entity.mass,
-                "position": entity.position.tolist(),
-                "velocity": entity.velocity.tolist(),
-            }
-            for entity in scene.entities
+            _entity_to_dict(entity) for entity in scene.entities
         ],
         "ui_state": scene.ui_state or {},
     }
+
+
+def _entity_to_dict(entity: SimEntity) -> Dict[str, Any]:
+    if isinstance(entity, PointMass):
+        return {
+            "type": "point_mass",
+            "entity_id": entity.entity_id,
+            "mass": entity.mass,
+            "position": entity.position.tolist(),
+            "velocity": entity.velocity.tolist(),
+        }
+    if isinstance(entity, RigidBody):
+        return {
+            "type": "rigid_body",
+            "entity_id": entity.entity_id,
+            "com_position": entity.com_position.tolist(),
+            "com_velocity": entity.com_velocity.tolist(),
+            "orientation": entity.orientation.tolist(),
+            "omega_world": entity.omega_world.tolist(),
+            "components": [
+                {
+                    "component_id": component.component_id,
+                    "mass": component.mass,
+                    "position_body": component.position_body.tolist(),
+                }
+                for component in entity.components
+            ],
+        }
+    raise TypeError(f"Unsupported entity type: {type(entity)}")
 
 
 def scene_from_dict(payload: Dict[str, Any]) -> SceneData:
@@ -42,14 +65,37 @@ def scene_from_dict(payload: Dict[str, Any]) -> SceneData:
         raise ValueError(f"Unsupported scene version: {version}")
     entities = []
     for entity_data in payload.get("entities", []):
-        entities.append(
-            PointMass(
-                entity_id=str(entity_data["entity_id"]),
-                mass=float(entity_data["mass"]),
-                position=np.array(entity_data["position"], dtype=float),
-                velocity=np.array(entity_data["velocity"], dtype=float),
+        entity_type = entity_data.get("type", "point_mass")
+        if entity_type == "point_mass":
+            entities.append(
+                PointMass(
+                    entity_id=str(entity_data["entity_id"]),
+                    mass=float(entity_data["mass"]),
+                    position=np.array(entity_data["position"], dtype=float),
+                    velocity=np.array(entity_data["velocity"], dtype=float),
+                )
             )
-        )
+        elif entity_type == "rigid_body":
+            components = [
+                RigidBodyComponent(
+                    component_id=str(component["component_id"]),
+                    mass=float(component["mass"]),
+                    position_body=np.array(component["position_body"], dtype=float),
+                )
+                for component in entity_data.get("components", [])
+            ]
+            entities.append(
+                RigidBody(
+                    entity_id=str(entity_data["entity_id"]),
+                    components=components,
+                    com_position=np.array(entity_data["com_position"], dtype=float),
+                    com_velocity=np.array(entity_data["com_velocity"], dtype=float),
+                    orientation=np.array(entity_data["orientation"], dtype=float),
+                    omega_world=np.array(entity_data["omega_world"], dtype=float),
+                )
+            )
+        else:
+            raise ValueError(f"Unsupported entity type: {entity_type}")
     return SceneData(
         entities=entities,
         scenario_id=payload.get("scenario_id"),
@@ -66,20 +112,43 @@ def deserialize_scene(payload: str) -> SceneData:
     return scene_from_dict(json.loads(payload))
 
 
-def capture_scene(entities: Iterable[PointMass], scenario_id: str | None = None) -> SceneData:
+def capture_scene(entities: Iterable[SimEntity], scenario_id: str | None = None) -> SceneData:
     return clone_scene(SceneData(entities=list(entities), scenario_id=scenario_id, ui_state={}))
 
 
 def clone_scene(scene: SceneData) -> SceneData:
-    entities_copy = [
-        PointMass(
-            entity_id=entity.entity_id,
-            mass=entity.mass,
-            position=np.array(entity.position, dtype=float),
-            velocity=np.array(entity.velocity, dtype=float),
-        )
-        for entity in scene.entities
-    ]
+    entities_copy = []
+    for entity in scene.entities:
+        if isinstance(entity, PointMass):
+            entities_copy.append(
+                PointMass(
+                    entity_id=entity.entity_id,
+                    mass=entity.mass,
+                    position=np.array(entity.position, dtype=float),
+                    velocity=np.array(entity.velocity, dtype=float),
+                )
+            )
+        elif isinstance(entity, RigidBody):
+            components_copy = [
+                RigidBodyComponent(
+                    component_id=component.component_id,
+                    mass=component.mass,
+                    position_body=np.array(component.position_body, dtype=float),
+                )
+                for component in entity.components
+            ]
+            entities_copy.append(
+                RigidBody(
+                    entity_id=entity.entity_id,
+                    components=components_copy,
+                    com_position=np.array(entity.com_position, dtype=float),
+                    com_velocity=np.array(entity.com_velocity, dtype=float),
+                    orientation=np.array(entity.orientation, dtype=float),
+                    omega_world=np.array(entity.omega_world, dtype=float),
+                )
+            )
+        else:
+            raise TypeError(f"Unsupported entity type: {type(entity)}")
     ui_state = dict(scene.ui_state or {})
     return SceneData(
         entities=entities_copy,

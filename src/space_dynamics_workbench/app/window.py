@@ -6,7 +6,7 @@ from typing import Optional
 import numpy as np
 from PySide6 import QtCore, QtGui, QtWidgets
 
-from ..core.model import PointMass
+from ..core.model import PointMass, RigidBody, resolve_entity_by_id
 from ..core.physics import FrameChoice, compute_frame_vectors, from_frame
 from ..core.scenarios import load_builtin_scenarios, scenario_registry
 from ..core.sim import Simulation, SymplecticEulerIntegrator
@@ -92,7 +92,8 @@ class MainWindow(QtWidgets.QMainWindow):
         toolbar.addAction(self._load_action)
 
         self._connect_renderer(self._renderer)
-        self._inspector.entity_updated.connect(self._on_entity_updated)
+        self._inspector.point_mass_updated.connect(self._on_point_mass_updated)
+        self._inspector.rigid_body_updated.connect(self._on_rigid_body_updated)
         self._view_options.frame_changed.connect(self._on_frame_changed)
         self._view_options.overlays_changed.connect(self._on_overlays_changed)
         self._view_options.renderer_changed.connect(self._on_renderer_changed)
@@ -133,7 +134,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self._frame_vectors = compute_frame_vectors(self._simulation.entities, self._frame_choice)
         self._renderer.set_scene(self._frame_vectors, self._overlays, self._selected_entity_id)
         self._invariants.update_values(self._simulation.entities)
-        self._inspector.set_entity(self._find_entity(self._selected_entity_id))
+        entity, _ = self._resolve_entity(self._selected_entity_id)
+        self._inspector.set_entity(entity)
 
     def _toggle_play(self, checked: bool) -> None:
         if self._simulation is None:
@@ -165,8 +167,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self._update_ui()
 
     def _on_entity_dragged(self, entity_id: str, new_position: np.ndarray) -> None:
-        entity = self._find_entity(entity_id)
-        if entity is None or self._frame_vectors is None:
+        entity, component = self._resolve_entity(entity_id)
+        if entity is None or component is not None or self._frame_vectors is None:
+            return
+        if isinstance(entity, RigidBody):
             return
         dimension = self._frame_vectors.dimension
         position_frame = np.zeros(dimension, dtype=float)
@@ -174,9 +178,15 @@ class MainWindow(QtWidgets.QMainWindow):
         entity.position = from_frame(position_frame, self._frame_choice, self._frame_vectors.r_oc_world)
         self._update_ui()
 
-    def _on_entity_updated(self, entity_id: str, mass: float, position: tuple[float, float], velocity: tuple[float, float]) -> None:
-        entity = self._find_entity(entity_id)
-        if entity is None:
+    def _on_point_mass_updated(
+        self,
+        entity_id: str,
+        mass: float,
+        position: tuple[float, float],
+        velocity: tuple[float, float],
+    ) -> None:
+        entity, _ = self._resolve_entity(entity_id)
+        if entity is None or not isinstance(entity, PointMass):
             return
         entity.mass = mass
         position_frame = np.array(position, dtype=float)
@@ -188,6 +198,21 @@ class MainWindow(QtWidgets.QMainWindow):
             position_world = position_frame
         entity.position = position_world
         entity.velocity = np.array(velocity, dtype=float)
+        self._update_ui()
+
+    def _on_rigid_body_updated(
+        self,
+        entity_id: str,
+        com_position: tuple[float, float, float],
+        com_velocity: tuple[float, float, float],
+        omega_world: tuple[float, float, float],
+    ) -> None:
+        entity, _ = self._resolve_entity(entity_id)
+        if entity is None or not isinstance(entity, RigidBody):
+            return
+        entity.com_position = np.array(com_position, dtype=float)
+        entity.com_velocity = np.array(com_velocity, dtype=float)
+        entity.omega_world = np.array(omega_world, dtype=float)
         self._update_ui()
 
     def _reset_scene(self) -> None:
@@ -296,10 +321,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self._apply_scene(scene)
         self._initial_scene = scene
 
-    def _find_entity(self, entity_id: str | None) -> PointMass | None:
+    def _resolve_entity(
+        self, entity_id: str | None
+    ) -> tuple[PointMass | RigidBody | None, object | None]:
         if self._simulation is None or entity_id is None:
-            return None
-        for entity in self._simulation.entities:
-            if entity.entity_id == entity_id:
-                return entity
-        return None
+            return None, None
+        return resolve_entity_by_id(self._simulation.entities, entity_id)

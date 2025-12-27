@@ -5,6 +5,7 @@ from .registry import ScenarioRegistry, scenario_registry
 def load_builtin_scenarios() -> None:
     # Import side effects to register built-in scenarios.
     from . import com_sandbox  # noqa: F401
+    from . import rigid_body_sandbox  # noqa: F401
 
 
 __all__ = [

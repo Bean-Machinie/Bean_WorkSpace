@@ -5,7 +5,7 @@ from typing import Iterable
 import numpy as np
 from PySide6 import QtWidgets
 
-from ...core.model import PointMass
+from ...core.model import PointMass, SimEntity, iter_mass_points
 from ...core.physics import (
     center_of_mass,
     center_of_velocity,
@@ -32,9 +32,9 @@ class InvariantsPanel(QtWidgets.QGroupBox):
         layout.addRow("||sum(m r_CP)||", self._pos_invariant)
         layout.addRow("||sum(m v_CP)||", self._vel_invariant)
 
-    def update_values(self, entities: Iterable[PointMass]) -> None:
-        entities_list = list(entities)
-        if not entities_list:
+    def update_values(self, entities: Iterable[SimEntity]) -> None:
+        mass_points = iter_mass_points(entities)
+        if not mass_points:
             self._total_mass.setText("-")
             self._com.setText("-")
             self._cov.setText("-")
@@ -42,14 +42,20 @@ class InvariantsPanel(QtWidgets.QGroupBox):
             self._vel_invariant.setText("-")
             return
 
-        total = total_mass(entities_list)
-        com = center_of_mass(entities_list)
-        cov = center_of_velocity(entities_list)
-        pos_inv = np.linalg.norm(invariant_position_sum(entities_list))
-        vel_inv = np.linalg.norm(invariant_velocity_sum(entities_list))
+        total = total_mass(mass_points)
+        com = center_of_mass(mass_points)
+        cov = center_of_velocity(mass_points)
+        pos_inv = np.linalg.norm(invariant_position_sum(mass_points))
+        vel_inv = np.linalg.norm(invariant_velocity_sum(mass_points))
 
         self._total_mass.setText(f"{total:.3f}")
-        self._com.setText(f"[{com[0]:.3f}, {com[1]:.3f}]")
-        self._cov.setText(f"[{cov[0]:.3f}, {cov[1]:.3f}]")
+        self._com.setText(self._format_vector(com))
+        self._cov.setText(self._format_vector(cov))
         self._pos_invariant.setText(f"{pos_inv:.6f}")
         self._vel_invariant.setText(f"{vel_inv:.6f}")
+
+    @staticmethod
+    def _format_vector(vec: np.ndarray) -> str:
+        if vec.size >= 3:
+            return f"[{vec[0]:.3f}, {vec[1]:.3f}, {vec[2]:.3f}]"
+        return f"[{vec[0]:.3f}, {vec[1]:.3f}]"

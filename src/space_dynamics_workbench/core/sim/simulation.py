@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Protocol
 
-from ..model import PointMass, Vector
+from ..model import PointMass, RigidBody, SimEntity, Vector
 
 
 class Integrator(Protocol):
@@ -17,14 +17,17 @@ class SymplecticEulerIntegrator:
 
     def step(self, sim: "Simulation") -> None:
         for entity in sim.entities:
-            acceleration = sim.acceleration_for(entity)
-            entity.velocity = entity.velocity + acceleration * sim.dt
-            entity.position = entity.position + entity.velocity * sim.dt
+            if isinstance(entity, PointMass):
+                acceleration = sim.acceleration_for(entity)
+                entity.velocity = entity.velocity + acceleration * sim.dt
+                entity.position = entity.position + entity.velocity * sim.dt
+            elif isinstance(entity, RigidBody):
+                entity.step_kinematic(sim.dt)
 
 
 @dataclass
 class Simulation:
-    entities: list[PointMass]
+    entities: list[SimEntity]
     dt: float
     integrator: Integrator
     time: float = 0.0

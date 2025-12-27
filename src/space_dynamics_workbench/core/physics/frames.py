@@ -6,7 +6,7 @@ from typing import Iterable, List
 
 import numpy as np
 
-from ..model import PointMass, Vector
+from ..model import SimEntity, Vector, iter_mass_points
 from .com import center_of_mass
 
 
@@ -69,15 +69,15 @@ def from_frame(point_frame: Vector, frame: FrameChoice, r_oc_world: Vector) -> V
     raise ValueError(f"Unsupported frame: {frame}")
 
 
-def compute_frame_vectors(entities: Iterable[PointMass], frame: FrameChoice) -> FrameVectors:
-    entities_list = list(entities)
-    if not entities_list:
+def compute_frame_vectors(entities: Iterable[SimEntity], frame: FrameChoice) -> FrameVectors:
+    mass_points = iter_mass_points(entities)
+    if not mass_points:
         return FrameVectors.empty(frame)
 
-    entity_ids = [entity.entity_id for entity in entities_list]
-    masses = [entity.mass for entity in entities_list]
-    r_op_list = [entity.position for entity in entities_list]
-    r_oc_world = center_of_mass(entities_list)
+    entity_ids = [point.entity_id for point in mass_points]
+    masses = [point.mass for point in mass_points]
+    r_op_list = [point.position for point in mass_points]
+    r_oc_world = center_of_mass(mass_points)
     dimension = int(r_oc_world.size)
 
     origin_world = np.zeros(dimension, dtype=float)
