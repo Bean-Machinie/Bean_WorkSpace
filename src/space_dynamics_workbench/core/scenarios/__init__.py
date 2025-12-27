@@ -6,6 +6,7 @@ def load_builtin_scenarios() -> None:
     # Import side effects to register built-in scenarios.
     from . import com_sandbox  # noqa: F401
     from . import rigid_body_sandbox  # noqa: F401
+    from . import spacecraft_builder_blank  # noqa: F401
 
 
 __all__ = [

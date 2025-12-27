@@ -11,6 +11,7 @@ from ..core.physics import FrameChoice, compute_frame_vectors, from_frame
 from ..core.scenarios import load_builtin_scenarios, scenario_registry
 from ..core.sim import Simulation, SymplecticEulerIntegrator
 from ..io.scene_format import SceneData, capture_scene, clone_scene, deserialize_scene, serialize_scene
+from .mesh_generation import generate_mass_points_from_vertices
 from .mesh_loading import load_mesh_data, mesh_loading_available, mesh_loading_error
 from .rendering import DisplayOptions, OverlayOptions, Renderer2D, Renderer3D, renderer3d_available, renderer3d_error
 from .widgets import InspectorPanel, InvariantsPanel, SpacecraftBuilderPanel, ViewOptionsPanel
@@ -115,6 +116,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self._builder_panel.components_updated.connect(self._on_components_updated)
         self._builder_panel.component_selected.connect(self._on_builder_component_selected)
         self._builder_panel.recenter_requested.connect(self._on_recenter_requested)
+        self._builder_panel.state_updated.connect(self._on_state_updated)
+        self._builder_panel.create_blank_requested.connect(self._on_create_blank_requested)
+        self._builder_panel.auto_generate_requested.connect(self._on_auto_generate_requested)
         self._view_options.frame_changed.connect(self._on_frame_changed)
         self._view_options.overlays_changed.connect(self._on_overlays_changed)
         self._view_options.renderer_changed.connect(self._on_renderer_changed)
@@ -319,6 +323,64 @@ class MainWindow(QtWidgets.QMainWindow):
                 self._selected_component_id = None
         self._update_ui()
 
+    def _on_state_updated(
+        self,
+        entity_id: str,
+        com_position: tuple[float, float, float],
+        com_velocity: tuple[float, float, float],
+        orientation: tuple[float, float, float, float],
+        omega_world: tuple[float, float, float],
+    ) -> None:
+        entity, _ = self._resolve_entity(entity_id)
+        if entity is None or not isinstance(entity, RigidBody):
+            return
+        entity.com_position = np.array(com_position, dtype=float)
+        entity.com_velocity = np.array(com_velocity, dtype=float)
+        entity.orientation = self._normalize_quaternion(np.array(orientation, dtype=float))
+        entity.omega_world = np.array(omega_world, dtype=float)
+        self._update_ui()
+
+    def _on_create_blank_requested(self, entity_id: str) -> None:
+        entity, _ = self._resolve_entity(entity_id)
+        if entity is None or not isinstance(entity, RigidBody):
+            return
+        entity.components = [RigidBodyComponent(component_id="C1", mass=1.0, position_body=np.zeros(3))]
+        entity.com_position = np.zeros(3, dtype=float)
+        entity.com_velocity = np.zeros(3, dtype=float)
+        entity.orientation = np.array([1.0, 0.0, 0.0, 0.0], dtype=float)
+        entity.omega_world = np.zeros(3, dtype=float)
+        entity.mesh = None
+        self._selected_component_id = None
+        self._update_ui()
+
+    def _on_auto_generate_requested(self, entity_id: str) -> None:
+        entity, _ = self._resolve_entity(entity_id)
+        if entity is None or not isinstance(entity, RigidBody):
+            return
+        if entity.mesh is None or not entity.mesh.path:
+            QtWidgets.QMessageBox.information(
+                self,
+                "Auto-generate Mass Points",
+                "Load a mesh model first to auto-generate mass points.",
+            )
+            return
+        if not mesh_loading_available():
+            QtWidgets.QMessageBox.information(
+                self,
+                "Mesh Loading Unavailable",
+                "Install mesh extras to enable auto generation (pip install -e .[mesh]).",
+            )
+            return
+        components = self._generate_components_from_mesh(entity)
+        if not components:
+            QtWidgets.QMessageBox.information(
+                self,
+                "Auto-generate Mass Points",
+                "Unable to auto-generate mass points from the mesh.",
+            )
+            return
+        self._on_components_updated(entity_id, components)
+
     def _on_recenter_requested(self, entity_id: str) -> None:
         entity, _ = self._resolve_entity(entity_id)
         if entity is None or not isinstance(entity, RigidBody):
@@ -365,6 +427,10 @@ class MainWindow(QtWidgets.QMainWindow):
         mesh_meta, info = self._mesh_metadata_from_path(file_path)
         entity.mesh = mesh_meta
         self._builder_panel.set_mesh_info(info)
+        if self._scenario_id == "spacecraft_builder_blank" and self._is_default_blank_components(entity.components):
+            components = self._generate_components_from_mesh(entity)
+            if components:
+                self._on_components_updated(entity.entity_id, components)
         self._update_ui()
 
     def _reset_scene(self) -> None:
@@ -535,3 +601,63 @@ class MainWindow(QtWidgets.QMainWindow):
         masses = np.array([component.mass for component in components], dtype=float)
         positions = np.stack([component.position_body for component in components])
         return np.sum(positions * masses[:, None], axis=0) / np.sum(masses)
+
+    @staticmethod
+    def _normalize_quaternion(q: np.ndarray) -> np.ndarray:
+        q_arr = np.asarray(q, dtype=float).reshape(4)
+        norm = float(np.linalg.norm(q_arr))
+        if norm <= 0.0:
+            return np.array([1.0, 0.0, 0.0, 0.0], dtype=float)
+        return q_arr / norm
+
+    @staticmethod
+    def _is_default_blank_components(components: list[RigidBodyComponent]) -> bool:
+        if len(components) != 1:
+            return False
+        component = components[0]
+        if component.component_id != "C1":
+            return False
+        if abs(component.mass - 1.0) > 1e-6:
+            return False
+        return np.allclose(component.position_body, np.zeros(3), atol=1e-9)
+
+    def _generate_components_from_mesh(self, entity: RigidBody) -> list[RigidBodyComponent]:
+        if entity.mesh is None or not entity.mesh.path:
+            return []
+        mesh_path = Path(entity.mesh.path)
+        if not mesh_path.is_absolute():
+            mesh_path = (Path.cwd() / mesh_path).resolve()
+        try:
+            mesh_data = load_mesh_data(mesh_path)
+        except Exception:
+            return []
+        vertices = self._apply_mesh_transform(mesh_data.vertices, entity.mesh)
+        points = generate_mass_points_from_vertices(vertices, max_points=5)
+        components = [
+            RigidBodyComponent(
+                component_id=f"P{i + 1}",
+                mass=1.0,
+                position_body=np.array(point, dtype=float),
+            )
+            for i, point in enumerate(points)
+        ]
+        return components
+
+    @staticmethod
+    def _apply_mesh_transform(vertices: np.ndarray, mesh: MeshMetadata) -> np.ndarray:
+        scaled = vertices * mesh.scale.reshape(1, 3)
+        rotation = MainWindow._quat_to_matrix(mesh.rotation_body)
+        rotated = (rotation @ scaled.T).T
+        return rotated + mesh.offset_body.reshape(1, 3)
+
+    @staticmethod
+    def _quat_to_matrix(q: np.ndarray) -> np.ndarray:
+        w, x, y, z = np.asarray(q, dtype=float).reshape(4)
+        return np.array(
+            [
+                [1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
+                [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
+                [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)],
+            ],
+            dtype=float,
+        )

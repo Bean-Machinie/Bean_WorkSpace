@@ -23,6 +23,9 @@ class SpacecraftBuilderPanel(QtWidgets.QWidget):
     components_updated = QtCore.Signal(str, object)
     component_selected = QtCore.Signal(str, object)
     recenter_requested = QtCore.Signal(str)
+    state_updated = QtCore.Signal(str, object, object, object, object)
+    create_blank_requested = QtCore.Signal(str)
+    auto_generate_requested = QtCore.Signal(str)
 
     def __init__(self, parent: QtWidgets.QWidget | None = None) -> None:
         super().__init__(parent)
@@ -38,7 +41,10 @@ class SpacecraftBuilderPanel(QtWidgets.QWidget):
         button_row = QtWidgets.QHBoxLayout()
         self._load_button = QtWidgets.QPushButton("Load Model...")
         self._load_button.clicked.connect(self.mesh_load_requested.emit)
+        self._new_craft_button = QtWidgets.QPushButton("Create new blank craft")
+        self._new_craft_button.clicked.connect(self._emit_create_blank)
         button_row.addWidget(self._load_button)
+        button_row.addWidget(self._new_craft_button)
         button_row.addStretch(1)
         model_layout.addLayout(button_row)
 
@@ -89,12 +95,15 @@ class SpacecraftBuilderPanel(QtWidgets.QWidget):
         self._add_button = QtWidgets.QPushButton("Add")
         self._remove_button = QtWidgets.QPushButton("Remove")
         self._duplicate_button = QtWidgets.QPushButton("Duplicate")
+        self._auto_generate_button = QtWidgets.QPushButton("Auto-generate mass points")
         self._add_button.clicked.connect(self._add_component)
         self._remove_button.clicked.connect(self._remove_component)
         self._duplicate_button.clicked.connect(self._duplicate_component)
+        self._auto_generate_button.clicked.connect(self._emit_auto_generate)
         buttons_row.addWidget(self._add_button)
         buttons_row.addWidget(self._remove_button)
         buttons_row.addWidget(self._duplicate_button)
+        buttons_row.addWidget(self._auto_generate_button)
         buttons_row.addStretch(1)
 
         components_layout.addWidget(self._components_table)
@@ -110,20 +119,75 @@ class SpacecraftBuilderPanel(QtWidgets.QWidget):
         com_layout.addRow("World frame", self._com_world_label)
         com_layout.addRow(self._recenter_button)
 
+        state_group = QtWidgets.QGroupBox("Initial State")
+        state_layout = QtWidgets.QFormLayout(state_group)
+        self._state_pos_x = self._make_spin()
+        self._state_pos_y = self._make_spin()
+        self._state_pos_z = self._make_spin()
+        self._state_vel_x = self._make_spin()
+        self._state_vel_y = self._make_spin()
+        self._state_vel_z = self._make_spin()
+        self._state_q_w = self._make_spin()
+        self._state_q_x = self._make_spin()
+        self._state_q_y = self._make_spin()
+        self._state_q_z = self._make_spin()
+        self._state_omega_x = self._make_spin()
+        self._state_omega_y = self._make_spin()
+        self._state_omega_z = self._make_spin()
+        self._state_reset_button = QtWidgets.QPushButton("Reset to defaults")
+        self._state_reset_button.clicked.connect(self._reset_state_defaults)
+
+        state_layout.addRow("CoM X", self._state_pos_x)
+        state_layout.addRow("CoM Y", self._state_pos_y)
+        state_layout.addRow("CoM Z", self._state_pos_z)
+        state_layout.addRow("v_C X", self._state_vel_x)
+        state_layout.addRow("v_C Y", self._state_vel_y)
+        state_layout.addRow("v_C Z", self._state_vel_z)
+        state_layout.addRow("q w", self._state_q_w)
+        state_layout.addRow("q x", self._state_q_x)
+        state_layout.addRow("q y", self._state_q_y)
+        state_layout.addRow("q z", self._state_q_z)
+        state_layout.addRow("omega X", self._state_omega_x)
+        state_layout.addRow("omega Y", self._state_omega_y)
+        state_layout.addRow("omega Z", self._state_omega_z)
+        state_layout.addRow(self._state_reset_button)
+
         main_layout.addWidget(model_group)
         main_layout.addWidget(display_group)
         main_layout.addWidget(components_group, stretch=1)
         main_layout.addWidget(com_group)
+        main_layout.addWidget(state_group)
         main_layout.addStretch(1)
 
         self.setEnabled(False)
 
+        self._state_fields = [
+            self._state_pos_x,
+            self._state_pos_y,
+            self._state_pos_z,
+            self._state_vel_x,
+            self._state_vel_y,
+            self._state_vel_z,
+            self._state_q_w,
+            self._state_q_x,
+            self._state_q_y,
+            self._state_q_z,
+            self._state_omega_x,
+            self._state_omega_y,
+            self._state_omega_z,
+        ]
+        for field in self._state_fields:
+            field.valueChanged.connect(self._emit_state_updated)
+
     def set_mesh_loading_available(self, available: bool, message: str | None = None) -> None:
         self._load_button.setEnabled(available)
+        self._auto_generate_button.setEnabled(available)
         if not available:
             self._load_button.setToolTip(message or "Install mesh extras to enable loading.")
+            self._auto_generate_button.setToolTip(message or "Install mesh extras to enable auto generation.")
         else:
             self._load_button.setToolTip("")
+            self._auto_generate_button.setToolTip("")
 
     def set_entity(self, entity: RigidBody | None) -> None:
         self._block_updates = True
@@ -136,6 +200,7 @@ class SpacecraftBuilderPanel(QtWidgets.QWidget):
             self._model_warning.setText("")
             self._com_body_label.setText("-")
             self._com_world_label.setText("-")
+            self._set_state_defaults()
             self.setEnabled(False)
         else:
             self._entity_id = entity.entity_id
@@ -155,6 +220,7 @@ class SpacecraftBuilderPanel(QtWidgets.QWidget):
                 self._model_path.setText("")
                 self._model_warning.setText("")
             self._update_com_labels(entity)
+            self._populate_state_fields(entity)
             self.setEnabled(True)
         self._block_updates = False
         self._block_selection = False
@@ -214,6 +280,44 @@ class SpacecraftBuilderPanel(QtWidgets.QWidget):
         if self._entity_id is None:
             return
         self.recenter_requested.emit(self._entity_id)
+
+    def _emit_state_updated(self) -> None:
+        if self._block_updates or self._entity_id is None:
+            return
+        self.state_updated.emit(
+            self._entity_id,
+            (
+                float(self._state_pos_x.value()),
+                float(self._state_pos_y.value()),
+                float(self._state_pos_z.value()),
+            ),
+            (
+                float(self._state_vel_x.value()),
+                float(self._state_vel_y.value()),
+                float(self._state_vel_z.value()),
+            ),
+            (
+                float(self._state_q_w.value()),
+                float(self._state_q_x.value()),
+                float(self._state_q_y.value()),
+                float(self._state_q_z.value()),
+            ),
+            (
+                float(self._state_omega_x.value()),
+                float(self._state_omega_y.value()),
+                float(self._state_omega_z.value()),
+            ),
+        )
+
+    def _emit_create_blank(self) -> None:
+        if self._entity_id is None:
+            return
+        self.create_blank_requested.emit(self._entity_id)
+
+    def _emit_auto_generate(self) -> None:
+        if self._entity_id is None:
+            return
+        self.auto_generate_requested.emit(self._entity_id)
 
     def _populate_components_table(self, entity: RigidBody) -> None:
         self._components_table.setRowCount(len(entity.components))
@@ -338,3 +442,46 @@ class SpacecraftBuilderPanel(QtWidgets.QWidget):
     @staticmethod
     def _format_vector(vec: np.ndarray) -> str:
         return f"[{vec[0]:.3f}, {vec[1]:.3f}, {vec[2]:.3f}]"
+
+    @staticmethod
+    def _make_spin() -> QtWidgets.QDoubleSpinBox:
+        spin = QtWidgets.QDoubleSpinBox()
+        spin.setRange(-1e9, 1e9)
+        spin.setDecimals(6)
+        return spin
+
+    def _populate_state_fields(self, entity: RigidBody) -> None:
+        self._state_pos_x.setValue(float(entity.com_position[0]))
+        self._state_pos_y.setValue(float(entity.com_position[1]))
+        self._state_pos_z.setValue(float(entity.com_position[2]))
+        self._state_vel_x.setValue(float(entity.com_velocity[0]))
+        self._state_vel_y.setValue(float(entity.com_velocity[1]))
+        self._state_vel_z.setValue(float(entity.com_velocity[2]))
+        self._state_q_w.setValue(float(entity.orientation[0]))
+        self._state_q_x.setValue(float(entity.orientation[1]))
+        self._state_q_y.setValue(float(entity.orientation[2]))
+        self._state_q_z.setValue(float(entity.orientation[3]))
+        self._state_omega_x.setValue(float(entity.omega_world[0]))
+        self._state_omega_y.setValue(float(entity.omega_world[1]))
+        self._state_omega_z.setValue(float(entity.omega_world[2]))
+
+    def _set_state_defaults(self) -> None:
+        self._state_pos_x.setValue(0.0)
+        self._state_pos_y.setValue(0.0)
+        self._state_pos_z.setValue(0.0)
+        self._state_vel_x.setValue(0.0)
+        self._state_vel_y.setValue(0.0)
+        self._state_vel_z.setValue(0.0)
+        self._state_q_w.setValue(1.0)
+        self._state_q_x.setValue(0.0)
+        self._state_q_y.setValue(0.0)
+        self._state_q_z.setValue(0.0)
+        self._state_omega_x.setValue(0.0)
+        self._state_omega_y.setValue(0.0)
+        self._state_omega_z.setValue(0.0)
+
+    def _reset_state_defaults(self) -> None:
+        if self._block_updates:
+            return
+        self._set_state_defaults()
+        self._emit_state_updated()

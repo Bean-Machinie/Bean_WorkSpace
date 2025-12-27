@@ -43,6 +43,7 @@ python -m space_dynamics_workbench.app.main
   `pip install -e .[mesh]`
 - The mesh is visual only. Physics remains driven by rigid-body components (mass points).
 - Portability note: meshes under `assets/` are stored as relative paths; external files are stored as absolute paths.
+ - Auto mass-point generation is a v1 bbox-based heuristic (center + axis extremes), intended as a placeholder.
 
 Basic workflow
 1) Select a RigidBody in the scene.
@@ -50,6 +51,11 @@ Basic workflow
 3) Edit mass components in the table to define the physical model.
 4) Adjust mesh opacity and show/hide mesh or mass points.
 5) Run the simulation as usual.
+
+## Spacecraft Builder (Blank) scenario
+- Choose "Spacecraft Builder (Blank)" from the scenario dropdown to start with a minimal craft.
+- Load a mesh and click "Auto-generate mass points" to create up to 5 placeholder components.
+- Use the "Initial State" section to edit CoM position/velocity, orientation (quaternion), and omega.
 
 Run tests
 ```bash
