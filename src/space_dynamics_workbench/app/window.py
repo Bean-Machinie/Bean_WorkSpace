@@ -7,11 +7,12 @@ import numpy as np
 from PySide6 import QtCore, QtGui, QtWidgets
 
 from ..core.model import PointMass
-from ..core.physics import center_of_mass
+from ..core.physics import FrameChoice, compute_frame_vectors, from_frame
 from ..core.scenarios import load_builtin_scenarios, scenario_registry
 from ..core.sim import Simulation, SymplecticEulerIntegrator
-from ..io.scene_format import SceneData, capture_scene, deserialize_scene, serialize_scene
-from .widgets import InspectorPanel, InvariantsPanel, SceneView
+from ..io.scene_format import SceneData, capture_scene, clone_scene, deserialize_scene, serialize_scene
+from .rendering import OverlayOptions, Renderer2D
+from .widgets import InspectorPanel, InvariantsPanel, ViewOptionsPanel
 
 
 class MainWindow(QtWidgets.QMainWindow):
@@ -22,11 +23,13 @@ class MainWindow(QtWidgets.QMainWindow):
 
         load_builtin_scenarios()
 
-        self._scene_view = SceneView()
+        self._renderer = Renderer2D()
         self._inspector = InspectorPanel()
         self._invariants = InvariantsPanel()
+        self._view_options = ViewOptionsPanel()
 
         side_layout = QtWidgets.QVBoxLayout()
+        side_layout.addWidget(self._view_options)
         side_layout.addWidget(self._inspector)
         side_layout.addWidget(self._invariants)
         side_layout.addStretch(1)
@@ -36,7 +39,7 @@ class MainWindow(QtWidgets.QMainWindow):
         side_widget.setMinimumWidth(280)
 
         central_layout = QtWidgets.QHBoxLayout()
-        central_layout.addWidget(self._scene_view, stretch=3)
+        central_layout.addWidget(self._renderer, stretch=3)
         central_layout.addWidget(side_widget, stretch=1)
 
         central_widget = QtWidgets.QWidget()
@@ -79,14 +82,19 @@ class MainWindow(QtWidgets.QMainWindow):
         toolbar.addAction(self._save_action)
         toolbar.addAction(self._load_action)
 
-        self._scene_view.entity_selected.connect(self._on_entity_selected)
-        self._scene_view.entity_dragged.connect(self._on_entity_dragged)
+        self._renderer.entity_selected.connect(self._on_entity_selected)
+        self._renderer.entity_dragged.connect(self._on_entity_dragged)
         self._inspector.entity_updated.connect(self._on_entity_updated)
+        self._view_options.frame_changed.connect(self._on_frame_changed)
+        self._view_options.overlays_changed.connect(self._on_overlays_changed)
 
         self._simulation: Simulation | None = None
         self._scenario_id: str | None = None
         self._initial_scene: SceneData | None = None
         self._selected_entity_id: Optional[str] = None
+        self._frame_choice: FrameChoice = FrameChoice.WORLD
+        self._overlays = OverlayOptions()
+        self._frame_vectors = None
 
         if self._scenario_combo.count() > 0:
             self._scenario_combo.setCurrentIndex(0)
@@ -101,7 +109,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._set_simulation(sim, scenario_id)
         defaults = scenario.ui_defaults()
         if defaults and defaults.view_range:
-            self._scene_view.set_view_range(defaults.view_range)
+            self._renderer.set_view_range(defaults.view_range)
 
     def _set_simulation(self, sim: Simulation, scenario_id: str | None) -> None:
         self._simulation = sim
@@ -113,8 +121,8 @@ class MainWindow(QtWidgets.QMainWindow):
     def _update_ui(self) -> None:
         if self._simulation is None:
             return
-        com = center_of_mass(self._simulation.entities)
-        self._scene_view.update_scene(self._simulation.entities, com, self._selected_entity_id)
+        self._frame_vectors = compute_frame_vectors(self._simulation.entities, self._frame_choice)
+        self._renderer.set_scene(self._frame_vectors, self._overlays, self._selected_entity_id)
         self._invariants.update_values(self._simulation.entities)
         self._inspector.set_entity(self._find_entity(self._selected_entity_id))
 
@@ -149,9 +157,12 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _on_entity_dragged(self, entity_id: str, new_position: np.ndarray) -> None:
         entity = self._find_entity(entity_id)
-        if entity is None:
+        if entity is None or self._frame_vectors is None:
             return
-        entity.position = new_position
+        dimension = self._frame_vectors.dimension
+        position_frame = np.zeros(dimension, dtype=float)
+        position_frame[:2] = new_position[:2]
+        entity.position = from_frame(position_frame, self._frame_choice, self._frame_vectors.r_oc_world)
         self._update_ui()
 
     def _on_entity_updated(self, entity_id: str, mass: float, position: tuple[float, float], velocity: tuple[float, float]) -> None:
@@ -159,23 +170,31 @@ class MainWindow(QtWidgets.QMainWindow):
         if entity is None:
             return
         entity.mass = mass
-        entity.position = np.array(position, dtype=float)
+        position_frame = np.array(position, dtype=float)
+        if self._frame_vectors is not None:
+            position_vec = np.zeros(self._frame_vectors.dimension, dtype=float)
+            position_vec[:2] = position_frame[:2]
+            position_world = from_frame(position_vec, self._frame_choice, self._frame_vectors.r_oc_world)
+        else:
+            position_world = position_frame
+        entity.position = position_world
         entity.velocity = np.array(velocity, dtype=float)
         self._update_ui()
 
     def _reset_scene(self) -> None:
         if self._initial_scene is None:
             return
-        self._apply_scene(self._initial_scene)
+        self._apply_scene(clone_scene(self._initial_scene))
 
     def _apply_scene(self, scene: SceneData) -> None:
-        scenario_id = scene.scenario_id
+        scene_copy = clone_scene(scene)
+        scenario_id = scene_copy.scenario_id
         if scenario_id and scenario_id in {s.scenario_id for s in scenario_registry.all()}:
             scenario = scenario_registry.get(scenario_id)
             sim = scenario.create_simulation()
-            sim.entities = scene.entities
+            sim.entities = scene_copy.entities
         else:
-            sim = Simulation(entities=scene.entities, dt=0.05, integrator=SymplecticEulerIntegrator())
+            sim = Simulation(entities=scene_copy.entities, dt=0.05, integrator=SymplecticEulerIntegrator())
         self._set_simulation(sim, scenario_id)
         self._select_scenario_in_combo(scenario_id)
 
@@ -190,6 +209,14 @@ class MainWindow(QtWidgets.QMainWindow):
             else:
                 self._scenario_combo.setCurrentIndex(-1)
         self._scenario_combo.blockSignals(False)
+
+    def _on_frame_changed(self, frame: FrameChoice) -> None:
+        self._frame_choice = frame
+        self._update_ui()
+
+    def _on_overlays_changed(self, overlays: OverlayOptions) -> None:
+        self._overlays = overlays
+        self._update_ui()
 
     def _save_scene(self) -> None:
         if self._simulation is None:

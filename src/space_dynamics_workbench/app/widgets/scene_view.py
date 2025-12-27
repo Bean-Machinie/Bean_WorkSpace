@@ -1,18 +1,16 @@
 from __future__ import annotations
 
-from typing import Iterable, List, Optional
+from typing import List, Optional
 
 import numpy as np
 import pyqtgraph as pg
 from PySide6 import QtCore, QtWidgets
 
-from ...core.model import PointMass
+from ...core.physics import FrameVectors, VectorSegment
+from ..rendering.base import OverlayOptions, Renderer
 
 
-class SceneView(QtWidgets.QWidget):
-    entity_selected = QtCore.Signal(str)
-    entity_dragged = QtCore.Signal(str, object)
-
+class SceneView(Renderer):
     def __init__(self, parent: QtWidgets.QWidget | None = None) -> None:
         super().__init__(parent)
         self._plot = pg.PlotWidget(background="w")
@@ -23,8 +21,16 @@ class SceneView(QtWidgets.QWidget):
 
         self._points = pg.ScatterPlotItem()
         self._com_marker = pg.ScatterPlotItem(symbol="x", size=14, pen=pg.mkPen("#d32f2f", width=2))
+        self._origin_marker = pg.ScatterPlotItem(symbol="o", size=8, pen=pg.mkPen("#616161", width=2))
+        self._r_op_item = pg.PlotDataItem(pen=pg.mkPen("#1976d2", width=1.5))
+        self._r_cp_item = pg.PlotDataItem(pen=pg.mkPen("#388e3c", width=1.5))
+        self._r_oc_item = pg.PlotDataItem(pen=pg.mkPen("#d32f2f", width=1.5))
         self._plot.addItem(self._points)
+        self._plot.addItem(self._origin_marker)
         self._plot.addItem(self._com_marker)
+        self._plot.addItem(self._r_op_item)
+        self._plot.addItem(self._r_cp_item)
+        self._plot.addItem(self._r_oc_item)
 
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -43,26 +49,52 @@ class SceneView(QtWidgets.QWidget):
         self._plot.setXRange(x_min, x_max, padding=0.0)
         self._plot.setYRange(y_min, y_max, padding=0.0)
 
-    def update_scene(self, entities: Iterable[PointMass], com: np.ndarray | None, selected_id: str | None) -> None:
-        entities_list = list(entities)
-        self._entity_ids = [entity.entity_id for entity in entities_list]
-        self._positions = np.stack([entity.position for entity in entities_list]) if entities_list else np.zeros((0, 2))
+    def set_scene(self, frame_vectors: FrameVectors, overlays: OverlayOptions, selected_id: str | None) -> None:
+        positions = list(frame_vectors.positions)
+        self._entity_ids = list(frame_vectors.entity_ids)
+        if positions:
+            self._positions = np.stack([pos[:2] for pos in positions])
+        else:
+            self._positions = np.zeros((0, 2))
         self._selected_id = selected_id
 
         spots = []
-        for entity in entities_list:
-            size = 6.0 + 3.0 * np.sqrt(entity.mass)
-            is_selected = entity.entity_id == selected_id
+        for idx, pos in enumerate(positions):
+            entity_id = self._entity_ids[idx] if idx < len(self._entity_ids) else None
+            is_selected = entity_id == selected_id
             brush = pg.mkBrush("#1976d2" if not is_selected else "#ff8f00")
             pen = pg.mkPen("#0d47a1" if not is_selected else "#e65100", width=2)
-            spots.append({"pos": entity.position, "size": size, "brush": brush, "pen": pen})
+            mass = frame_vectors.masses[idx] if idx < len(frame_vectors.masses) else 1.0
+            size = 6.0 + 3.0 * np.sqrt(max(mass, 0.0))
+            spots.append({"pos": pos[:2], "size": size, "brush": brush, "pen": pen})
         self._points.setData(spots)
-        if com is None or not entities_list:
-            com_pos = np.empty((0, 2), dtype=float)
-        else:
-            # pyqtgraph expects positions as an (N, 2) array via pos=.
-            com_pos = np.asarray(com, dtype=float).reshape(1, 2)
-        self._com_marker.setData(pos=com_pos)
+
+        self._origin_marker.setData(pos=np.asarray(frame_vectors.origin[:2], dtype=float).reshape(1, 2))
+        self._com_marker.setData(pos=np.asarray(frame_vectors.com[:2], dtype=float).reshape(1, 2))
+
+        self._set_vector_item(self._r_op_item, frame_vectors.r_op_segments, overlays.show_r_op)
+        self._set_vector_item(self._r_cp_item, frame_vectors.r_cp_segments, overlays.show_r_cp)
+        self._set_vector_item(self._r_oc_item, [frame_vectors.r_oc_segment], overlays.show_r_oc)
+
+    def clear(self) -> None:
+        self._points.setData([])
+        self._origin_marker.setData(pos=np.empty((0, 2), dtype=float))
+        self._com_marker.setData(pos=np.empty((0, 2), dtype=float))
+        self._r_op_item.setData([], [])
+        self._r_cp_item.setData([], [])
+        self._r_oc_item.setData([], [])
+
+    def _set_vector_item(self, item: pg.PlotDataItem, segments: List[VectorSegment], visible: bool) -> None:
+        item.setVisible(visible)
+        if not visible or not segments:
+            item.setData([], [])
+            return
+        x_vals: List[float] = []
+        y_vals: List[float] = []
+        for segment in segments:
+            x_vals.extend([segment.start[0], segment.end[0], np.nan])
+            y_vals.extend([segment.start[1], segment.end[1], np.nan])
+        item.setData(x_vals, y_vals)
 
     def _on_mouse_clicked(self, event: pg.GraphicsScene.mouseEvents.MouseClickEvent) -> None:
         if event.button() != QtCore.Qt.LeftButton:

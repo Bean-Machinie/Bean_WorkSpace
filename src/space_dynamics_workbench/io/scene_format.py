@@ -67,4 +67,23 @@ def deserialize_scene(payload: str) -> SceneData:
 
 
 def capture_scene(entities: Iterable[PointMass], scenario_id: str | None = None) -> SceneData:
-    return SceneData(entities=list(entities), scenario_id=scenario_id, ui_state={})
+    return clone_scene(SceneData(entities=list(entities), scenario_id=scenario_id, ui_state={}))
+
+
+def clone_scene(scene: SceneData) -> SceneData:
+    entities_copy = [
+        PointMass(
+            entity_id=entity.entity_id,
+            mass=entity.mass,
+            position=np.array(entity.position, dtype=float),
+            velocity=np.array(entity.velocity, dtype=float),
+        )
+        for entity in scene.entities
+    ]
+    ui_state = dict(scene.ui_state or {})
+    return SceneData(
+        entities=entities_copy,
+        scenario_id=scene.scenario_id,
+        ui_state=ui_state,
+        scene_version=scene.scene_version,
+    )

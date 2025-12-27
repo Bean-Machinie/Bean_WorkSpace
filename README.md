@@ -19,6 +19,11 @@ Run the app
 python -m space_dynamics_workbench.app.main
 ```
 
+## Visualizing frames and vectors
+- Use the "Reference Frame" dropdown to switch between World (O) and Center of Mass (C).
+- Toggle r_OP, r_OC, and r_CP overlays to visualize the textbook vectors.
+- In CoM frame, points are rendered relative to C (C is at the origin; O is shown as a marker).
+
 Run tests
 ```bash
 pytest

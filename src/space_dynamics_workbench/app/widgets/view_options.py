@@ -1,0 +1,52 @@
+from __future__ import annotations
+
+from PySide6 import QtCore, QtWidgets
+
+from ...core.physics import FrameChoice
+from ..rendering.base import OverlayOptions
+
+
+class ViewOptionsPanel(QtWidgets.QGroupBox):
+    frame_changed = QtCore.Signal(object)
+    overlays_changed = QtCore.Signal(object)
+
+    def __init__(self, parent: QtWidgets.QWidget | None = None) -> None:
+        super().__init__("View Options", parent)
+        layout = QtWidgets.QFormLayout(self)
+
+        self._frame_combo = QtWidgets.QComboBox()
+        self._frame_combo.addItem("World (O)", FrameChoice.WORLD)
+        self._frame_combo.addItem("Center of Mass (C)", FrameChoice.COM)
+
+        self._show_r_op = QtWidgets.QCheckBox("Show r_OP")
+        self._show_r_oc = QtWidgets.QCheckBox("Show r_OC")
+        self._show_r_cp = QtWidgets.QCheckBox("Show r_CP")
+        self._show_r_op.setChecked(True)
+        self._show_r_oc.setChecked(True)
+        self._show_r_cp.setChecked(False)
+
+        layout.addRow("Reference Frame", self._frame_combo)
+        layout.addRow(self._show_r_op)
+        layout.addRow(self._show_r_oc)
+        layout.addRow(self._show_r_cp)
+
+        self._frame_combo.currentIndexChanged.connect(self._emit_frame)
+        self._show_r_op.toggled.connect(self._emit_overlays)
+        self._show_r_oc.toggled.connect(self._emit_overlays)
+        self._show_r_cp.toggled.connect(self._emit_overlays)
+
+    def current_frame(self) -> FrameChoice:
+        return self._frame_combo.currentData()
+
+    def overlay_options(self) -> OverlayOptions:
+        return OverlayOptions(
+            show_r_op=self._show_r_op.isChecked(),
+            show_r_oc=self._show_r_oc.isChecked(),
+            show_r_cp=self._show_r_cp.isChecked(),
+        )
+
+    def _emit_frame(self) -> None:
+        self.frame_changed.emit(self.current_frame())
+
+    def _emit_overlays(self) -> None:
+        self.overlays_changed.emit(self.overlay_options())
