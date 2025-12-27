@@ -1,6 +1,7 @@
 from .entities import (
     MassPointLike,
     MassPointState,
+    MeshMetadata,
     PointMass,
     RigidBody,
     RigidBodyComponent,
@@ -13,6 +14,7 @@ from .entities import (
 __all__ = [
     "MassPointLike",
     "MassPointState",
+    "MeshMetadata",
     "PointMass",
     "RigidBody",
     "RigidBodyComponent",

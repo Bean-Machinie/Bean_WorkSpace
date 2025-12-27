@@ -6,13 +6,15 @@ from typing import Optional
 import numpy as np
 from PySide6 import QtCore, QtGui, QtWidgets
 
-from ..core.model import PointMass, RigidBody, resolve_entity_by_id
+from ..core.model import MeshMetadata, PointMass, RigidBody, RigidBodyComponent, resolve_entity_by_id
 from ..core.physics import FrameChoice, compute_frame_vectors, from_frame
 from ..core.scenarios import load_builtin_scenarios, scenario_registry
 from ..core.sim import Simulation, SymplecticEulerIntegrator
 from ..io.scene_format import SceneData, capture_scene, clone_scene, deserialize_scene, serialize_scene
-from .rendering import OverlayOptions, Renderer2D, Renderer3D, renderer3d_available, renderer3d_error
-from .widgets import InspectorPanel, InvariantsPanel, ViewOptionsPanel
+from .mesh_loading import load_mesh_data, mesh_loading_available, mesh_loading_error
+from .rendering import DisplayOptions, OverlayOptions, Renderer2D, Renderer3D, renderer3d_available, renderer3d_error
+from .widgets import InspectorPanel, InvariantsPanel, SpacecraftBuilderPanel, ViewOptionsPanel
+from .widgets.spacecraft_builder import MeshInfo
 
 
 class MainWindow(QtWidgets.QMainWindow):
@@ -54,6 +56,14 @@ class MainWindow(QtWidgets.QMainWindow):
         central_widget = QtWidgets.QWidget()
         central_widget.setLayout(central_layout)
         self.setCentralWidget(central_widget)
+
+        self._builder_panel = SpacecraftBuilderPanel()
+        self._builder_dock = QtWidgets.QDockWidget("Spacecraft Builder", self)
+        self._builder_dock.setWidget(self._builder_panel)
+        self._builder_dock.setAllowedAreas(
+            QtCore.Qt.LeftDockWidgetArea | QtCore.Qt.RightDockWidgetArea
+        )
+        self.addDockWidget(QtCore.Qt.RightDockWidgetArea, self._builder_dock)
 
         self._timer = QtCore.QTimer(self)
         self._timer.timeout.connect(self._on_tick)
@@ -100,6 +110,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self._inspector.point_mass_updated.connect(self._on_point_mass_updated)
         self._inspector.rigid_body_updated.connect(self._on_rigid_body_updated)
         self._inspector.rigid_component_selected.connect(self._on_rigid_component_selected)
+        self._builder_panel.mesh_load_requested.connect(self._on_mesh_load_requested)
+        self._builder_panel.display_options_changed.connect(self._on_display_options_changed)
+        self._builder_panel.components_updated.connect(self._on_components_updated)
+        self._builder_panel.component_selected.connect(self._on_builder_component_selected)
+        self._builder_panel.recenter_requested.connect(self._on_recenter_requested)
         self._view_options.frame_changed.connect(self._on_frame_changed)
         self._view_options.overlays_changed.connect(self._on_overlays_changed)
         self._view_options.renderer_changed.connect(self._on_renderer_changed)
@@ -111,7 +126,13 @@ class MainWindow(QtWidgets.QMainWindow):
         self._selected_component_id: Optional[str] = None
         self._frame_choice: FrameChoice = FrameChoice.WORLD
         self._overlays = OverlayOptions()
+        self._display_options = DisplayOptions()
         self._frame_vectors = None
+
+        self._builder_panel.set_mesh_loading_available(
+            mesh_loading_available(),
+            mesh_loading_error() or "Install mesh extras to enable model loading.",
+        )
 
         if self._scenario_combo.count() > 0:
             self._scenario_combo.setCurrentIndex(0)
@@ -144,12 +165,20 @@ class MainWindow(QtWidgets.QMainWindow):
         self._renderer.set_scene(
             self._frame_vectors,
             self._overlays,
+            self._display_options,
             self._selected_entity_id,
             self._selected_component_id,
+            entities=self._simulation.entities,
         )
         self._invariants.update_values(self._simulation.entities)
         entity, _ = self._resolve_entity(self._selected_entity_id)
         self._inspector.set_entity(entity)
+        if isinstance(entity, RigidBody):
+            self._builder_panel.set_entity(entity)
+            component_id = self._selected_component_id_for_entity(entity)
+            self._builder_panel.set_selected_component(component_id)
+        else:
+            self._builder_panel.set_entity(None)
 
     def _toggle_play(self, checked: bool) -> None:
         if self._simulation is None:
@@ -245,6 +274,97 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         self._selected_entity_id = entity_id
         self._selected_component_id = entity.component_entity_id(str(component_id))
+        self._update_ui()
+
+    def _on_builder_component_selected(self, entity_id: str, component_id: object) -> None:
+        if component_id is None:
+            self._selected_component_id = None
+            self._update_ui()
+            return
+        entity, _ = self._resolve_entity(entity_id)
+        if entity is None or not isinstance(entity, RigidBody):
+            return
+        self._selected_entity_id = entity_id
+        self._selected_component_id = entity.component_entity_id(str(component_id))
+        self._update_ui()
+
+    def _on_display_options_changed(self, options: DisplayOptions) -> None:
+        self._display_options = options
+        self._update_ui()
+
+    def _on_components_updated(self, entity_id: str, components: list[RigidBodyComponent]) -> None:
+        entity, _ = self._resolve_entity(entity_id)
+        if entity is None or not isinstance(entity, RigidBody):
+            return
+        if not components:
+            return
+        new_com_body = self._compute_com_body(components)
+        rotation = entity.rotation_matrix()
+        if np.linalg.norm(new_com_body) > 1e-12:
+            components = [
+                RigidBodyComponent(
+                    component_id=component.component_id,
+                    mass=component.mass,
+                    position_body=component.position_body - new_com_body,
+                )
+                for component in components
+            ]
+            entity.com_position = entity.com_position + rotation @ new_com_body
+            if entity.mesh is not None:
+                entity.mesh.offset_body = entity.mesh.offset_body - new_com_body
+        entity.components = components
+        if self._selected_component_id is not None:
+            valid_ids = {entity.component_entity_id(comp.component_id) for comp in components}
+            if self._selected_component_id not in valid_ids:
+                self._selected_component_id = None
+        self._update_ui()
+
+    def _on_recenter_requested(self, entity_id: str) -> None:
+        entity, _ = self._resolve_entity(entity_id)
+        if entity is None or not isinstance(entity, RigidBody):
+            return
+        masses = np.array([component.mass for component in entity.components], dtype=float)
+        positions = np.stack([component.position_body for component in entity.components])
+        com_body = np.sum(positions * masses[:, None], axis=0) / np.sum(masses)
+        if np.allclose(com_body, np.zeros(3), atol=1e-12):
+            return
+        entity.components = [
+            RigidBodyComponent(
+                component_id=component.component_id,
+                mass=component.mass,
+                position_body=component.position_body - com_body,
+            )
+            for component in entity.components
+        ]
+        if entity.mesh is not None:
+            entity.mesh.offset_body = entity.mesh.offset_body - com_body
+        self._update_ui()
+
+    def _on_mesh_load_requested(self) -> None:
+        entity, _ = self._resolve_entity(self._selected_entity_id)
+        if entity is None or not isinstance(entity, RigidBody):
+            QtWidgets.QMessageBox.information(
+                self, "Spacecraft Builder", "Select a RigidBody to attach a model."
+            )
+            return
+        if not mesh_loading_available():
+            QtWidgets.QMessageBox.information(
+                self,
+                "Mesh Loading Unavailable",
+                "Install mesh extras to enable model loading (pip install -e .[mesh]).",
+            )
+            return
+        file_path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self,
+            "Load Model",
+            "",
+            "Mesh Files (*.glb *.gltf *.obj *.stl);;All Files (*)",
+        )
+        if not file_path:
+            return
+        mesh_meta, info = self._mesh_metadata_from_path(file_path)
+        entity.mesh = mesh_meta
+        self._builder_panel.set_mesh_info(info)
         self._update_ui()
 
     def _reset_scene(self) -> None:
@@ -369,3 +489,49 @@ class MainWindow(QtWidgets.QMainWindow):
         if self._renderer is self._renderer_2d:
             return
         self._renderer.frame_scene()
+
+    def _selected_component_id_for_entity(self, entity: RigidBody) -> str | None:
+        if self._selected_component_id is None:
+            return None
+        for component in entity.components:
+            if entity.component_entity_id(component.component_id) == self._selected_component_id:
+                return component.component_id
+        return None
+
+    def _mesh_metadata_from_path(self, file_path: str) -> tuple[MeshMetadata, MeshInfo]:
+        path = Path(file_path).resolve()
+        project_root = Path.cwd().resolve()
+        assets_root = project_root / "assets"
+        mesh_info = "Mesh info unavailable"
+        warning = ""
+        try:
+            mesh_data = load_mesh_data(path)
+            mesh_info = f"{mesh_data.vertex_count} vertices, {mesh_data.face_count} faces"
+        except Exception as exc:
+            mesh_info = f"Mesh loaded with warnings: {exc}"
+        if self._is_under_root(path, assets_root):
+            rel_path = path.relative_to(assets_root)
+            mesh_path = Path("assets") / rel_path
+            metadata = MeshMetadata(path=str(mesh_path).replace("\\", "/"), path_is_absolute=False)
+        else:
+            metadata = MeshMetadata(path=str(path), path_is_absolute=True)
+            warning = "External path (absolute) reduces portability."
+        return metadata, self._mesh_info_from_metadata(metadata, mesh_info, warning)
+
+    @staticmethod
+    def _is_under_root(path: Path, root: Path) -> bool:
+        try:
+            path.relative_to(root)
+            return True
+        except ValueError:
+            return False
+
+    @staticmethod
+    def _mesh_info_from_metadata(metadata: MeshMetadata, info: str, warning: str) -> MeshInfo:
+        return MeshInfo(path=metadata.path, info=info, warning=warning)
+
+    @staticmethod
+    def _compute_com_body(components: list[RigidBodyComponent]) -> np.ndarray:
+        masses = np.array([component.mass for component in components], dtype=float)
+        positions = np.stack([component.position_body for component in components])
+        return np.sum(positions * masses[:, None], axis=0) / np.sum(masses)

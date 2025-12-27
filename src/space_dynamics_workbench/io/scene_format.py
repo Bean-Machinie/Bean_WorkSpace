@@ -6,7 +6,7 @@ from typing import Any, Dict, Iterable, List
 
 import numpy as np
 
-from ..core.model import PointMass, RigidBody, RigidBodyComponent, SimEntity
+from ..core.model import MeshMetadata, PointMass, RigidBody, RigidBodyComponent, SimEntity
 
 SCENE_VERSION = 1
 
@@ -40,7 +40,7 @@ def _entity_to_dict(entity: SimEntity) -> Dict[str, Any]:
             "velocity": entity.velocity.tolist(),
         }
     if isinstance(entity, RigidBody):
-        return {
+        payload = {
             "type": "rigid_body",
             "entity_id": entity.entity_id,
             "com_position": entity.com_position.tolist(),
@@ -56,6 +56,15 @@ def _entity_to_dict(entity: SimEntity) -> Dict[str, Any]:
                 for component in entity.components
             ],
         }
+        if entity.mesh is not None:
+            payload["mesh"] = {
+                "path": entity.mesh.path,
+                "path_is_absolute": bool(entity.mesh.path_is_absolute),
+                "scale": entity.mesh.scale.tolist(),
+                "offset_body": entity.mesh.offset_body.tolist(),
+                "rotation_body": entity.mesh.rotation_body.tolist(),
+            }
+        return payload
     raise TypeError(f"Unsupported entity type: {type(entity)}")
 
 
@@ -84,6 +93,18 @@ def scene_from_dict(payload: Dict[str, Any]) -> SceneData:
                 )
                 for component in entity_data.get("components", [])
             ]
+            mesh_data = entity_data.get("mesh")
+            mesh = None
+            if isinstance(mesh_data, dict):
+                path = str(mesh_data.get("path", "")).strip()
+                if path:
+                    mesh = MeshMetadata(
+                        path=path,
+                        path_is_absolute=bool(mesh_data.get("path_is_absolute", False)),
+                        scale=np.array(mesh_data.get("scale", [1.0, 1.0, 1.0]), dtype=float),
+                        offset_body=np.array(mesh_data.get("offset_body", [0.0, 0.0, 0.0]), dtype=float),
+                        rotation_body=np.array(mesh_data.get("rotation_body", [1.0, 0.0, 0.0, 0.0]), dtype=float),
+                    )
             entities.append(
                 RigidBody(
                     entity_id=str(entity_data["entity_id"]),
@@ -92,6 +113,7 @@ def scene_from_dict(payload: Dict[str, Any]) -> SceneData:
                     com_velocity=np.array(entity_data["com_velocity"], dtype=float),
                     orientation=np.array(entity_data["orientation"], dtype=float),
                     omega_world=np.array(entity_data["omega_world"], dtype=float),
+                    mesh=mesh,
                 )
             )
         else:
@@ -145,6 +167,15 @@ def clone_scene(scene: SceneData) -> SceneData:
                     com_velocity=np.array(entity.com_velocity, dtype=float),
                     orientation=np.array(entity.orientation, dtype=float),
                     omega_world=np.array(entity.omega_world, dtype=float),
+                    mesh=None
+                    if entity.mesh is None
+                    else MeshMetadata(
+                        path=str(entity.mesh.path),
+                        path_is_absolute=bool(entity.mesh.path_is_absolute),
+                        scale=np.array(entity.mesh.scale, dtype=float),
+                        offset_body=np.array(entity.mesh.offset_body, dtype=float),
+                        rotation_body=np.array(entity.mesh.rotation_body, dtype=float),
+                    ),
                 )
             )
         else:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import List
 
 import logging
@@ -9,8 +10,10 @@ import numpy as np
 import pyqtgraph.opengl as gl
 from PySide6 import QtCore, QtGui, QtWidgets
 
+from ...core.model import MeshMetadata, RigidBody
 from ...core.physics import FrameVectors, VectorSegment
-from .base import OverlayOptions, Renderer
+from ..mesh_loading import load_mesh_data, mesh_loading_available
+from .base import DisplayOptions, OverlayOptions, Renderer
 
 
 class _PickingGLViewWidget(gl.GLViewWidget):
@@ -48,6 +51,7 @@ class Renderer3D(Renderer):
     POINT_COMPONENT_COLOR = (0.3, 0.85, 0.4, 1.0)
     ORIGIN_COLOR = (0.55, 0.55, 0.55, 1.0)
     COM_COLOR = (1.0, 0.3, 0.3, 1.0)
+    MESH_BASE_COLOR = (0.75, 0.78, 0.82, 1.0)
 
     def __init__(self, parent: QtWidgets.QWidget | None = None) -> None:
         super().__init__(parent)
@@ -145,6 +149,9 @@ class Renderer3D(Renderer):
         self._positions: np.ndarray = np.zeros((0, 3), dtype=float)
         self._last_com: np.ndarray = np.zeros(3, dtype=float)
         self._viewport_size: tuple[int, int] = (1, 1)
+        self._mesh_items: dict[str, gl.GLMeshItem] = {}
+        self._mesh_sources: dict[str, str] = {}
+        self._project_root = Path.cwd()
 
     def set_view_range(self, view_range: tuple[float, float, float, float]) -> None:
         _ = view_range
@@ -153,9 +160,12 @@ class Renderer3D(Renderer):
         self,
         frame_vectors: FrameVectors,
         overlays: OverlayOptions,
+        display: DisplayOptions | None,
         selected_id: str | None,
         selected_component_id: str | None = None,
+        entities=None,
     ) -> None:
+        display_options = display or DisplayOptions()
         positions = self._to_3d_stack(frame_vectors.positions)
         self._positions = positions
         self._entity_ids = list(frame_vectors.entity_ids)
@@ -187,6 +197,7 @@ class Renderer3D(Renderer):
                 colors[idx] = np.array(self.POINT_COMPONENT_COLOR, dtype=np.float32)
                 sizes[idx] += 4.0
             self._points_item.setData(pos=positions.astype(np.float32, copy=False), size=sizes, color=colors)
+        self._points_item.setVisible(display_options.show_mass_points)
 
         origin_pos = self._to_3d(frame_vectors.origin)
         self._origin_item.setData(pos=origin_pos.reshape(1, 3))
@@ -203,6 +214,8 @@ class Renderer3D(Renderer):
         self._grid_yz_minor.setVisible(overlays.show_grid_yz)
         self._grid_yz_major.setVisible(overlays.show_grid_yz)
 
+        self._update_meshes(entities, display_options)
+
     def clear(self) -> None:
         self._points_item.setData(pos=np.zeros((0, 3), dtype=np.float32))
         self._origin_item.setData(pos=np.zeros((0, 3), dtype=np.float32))
@@ -211,6 +224,10 @@ class Renderer3D(Renderer):
         self._r_cp_item.setData(pos=np.zeros((0, 3), dtype=np.float32))
         self._r_oc_item.setData(pos=np.zeros((0, 3), dtype=np.float32))
         self._last_com = np.zeros(3, dtype=float)
+        for mesh_item in self._mesh_items.values():
+            self._view.removeItem(mesh_item)
+        self._mesh_items.clear()
+        self._mesh_sources.clear()
 
     def frame_scene(self) -> None:
         if self._positions.size == 0 and self._last_com.size == 0:
@@ -288,6 +305,87 @@ class Renderer3D(Renderer):
                 )
             )
         return items
+
+    def _update_meshes(self, entities, display: DisplayOptions) -> None:
+        if not entities or not display.show_mesh:
+            for mesh_item in self._mesh_items.values():
+                mesh_item.setVisible(False)
+            return
+        if not mesh_loading_available():
+            for mesh_item in self._mesh_items.values():
+                mesh_item.setVisible(False)
+            return
+
+        active_ids: set[str] = set()
+        for entity in entities:
+            if not isinstance(entity, RigidBody):
+                continue
+            if entity.mesh is None or not entity.mesh.path:
+                continue
+            active_ids.add(entity.entity_id)
+            mesh_path = self._resolve_mesh_path(entity.mesh)
+            if mesh_path is None:
+                continue
+            mesh_key = str(mesh_path)
+            mesh_item = self._mesh_items.get(entity.entity_id)
+            if mesh_item is None:
+                mesh_item = gl.GLMeshItem(
+                    meshdata=gl.MeshData(vertexes=np.zeros((0, 3), dtype=float), faces=np.zeros((0, 3), dtype=np.int32)),
+                    smooth=False,
+                    drawEdges=False,
+                    drawFaces=True,
+                    glOptions="translucent",
+                )
+                self._mesh_items[entity.entity_id] = mesh_item
+                self._view.addItem(mesh_item)
+            try:
+                mesh_data = load_mesh_data(mesh_path)
+            except Exception as exc:
+                self._log.warning("Mesh load failed for %s: %s", mesh_path, exc)
+                continue
+            if self._mesh_sources.get(entity.entity_id) != mesh_key:
+                self._mesh_sources[entity.entity_id] = mesh_key
+            vertices_world = self._transform_mesh_vertices(mesh_data.vertices, entity, entity.mesh)
+            mesh_item.setMeshData(meshdata=gl.MeshData(vertexes=vertices_world, faces=mesh_data.faces))
+            color = (*self.MESH_BASE_COLOR[:3], float(display.mesh_opacity))
+            mesh_item.setColor(color)
+            mesh_item.setVisible(True)
+
+        for entity_id in list(self._mesh_items.keys()):
+            if entity_id not in active_ids:
+                mesh_item = self._mesh_items.pop(entity_id)
+                self._mesh_sources.pop(entity_id, None)
+                self._view.removeItem(mesh_item)
+
+    def _resolve_mesh_path(self, mesh: MeshMetadata) -> Path | None:
+        mesh_path = Path(mesh.path)
+        if not mesh_path.is_absolute():
+            mesh_path = (self._project_root / mesh_path).resolve()
+        if not mesh_path.exists():
+            self._log.warning("Mesh path not found: %s", mesh_path)
+            return None
+        return mesh_path
+
+    def _transform_mesh_vertices(self, vertices: np.ndarray, body: RigidBody, mesh: MeshMetadata) -> np.ndarray:
+        scaled = vertices * mesh.scale.reshape(1, 3)
+        mesh_rotation = self._quat_to_matrix(mesh.rotation_body)
+        rotated_local = (mesh_rotation @ scaled.T).T
+        offset_local = rotated_local + mesh.offset_body.reshape(1, 3)
+        body_rotation = body.rotation_matrix()
+        world = (body_rotation @ offset_local.T).T + body.com_position.reshape(1, 3)
+        return world.astype(np.float32, copy=False)
+
+    @staticmethod
+    def _quat_to_matrix(q: np.ndarray) -> np.ndarray:
+        w, x, y, z = np.asarray(q, dtype=float).reshape(4)
+        return np.array(
+            [
+                [1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
+                [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
+                [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)],
+            ],
+            dtype=float,
+        )
 
     def _handle_click(self, view_pos: QtCore.QPointF) -> None:
         picked = self._pick_entity(view_pos)

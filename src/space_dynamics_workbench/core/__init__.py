@@ -1,6 +1,7 @@
 from .model import (
     MassPointLike,
     MassPointState,
+    MeshMetadata,
     PointMass,
     RigidBody,
     RigidBodyComponent,
@@ -26,6 +27,7 @@ __all__ = [
     "Vector",
     "MassPointLike",
     "MassPointState",
+    "MeshMetadata",
     "iter_mass_points",
     "resolve_entity_by_id",
     "center_of_mass",

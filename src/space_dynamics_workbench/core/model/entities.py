@@ -18,6 +18,13 @@ def _to_vector(values: Iterable[float], *, length: int | None = None) -> Vector:
     return arr
 
 
+def _to_scale_vector(values: object) -> Vector:
+    if np.isscalar(values):
+        scale = float(values)
+        return np.array([scale, scale, scale], dtype=float)
+    return _to_vector(values, length=3)
+
+
 @dataclass
 class PointMass:
     entity_id: str
@@ -46,6 +53,20 @@ class RigidBodyComponent:
         if self.mass <= 0:
             raise ValueError("Mass must be positive")
         object.__setattr__(self, "position_body", _to_vector(self.position_body, length=3))
+
+
+@dataclass
+class MeshMetadata:
+    path: str
+    path_is_absolute: bool = False
+    scale: Vector = field(default_factory=lambda: np.ones(3, dtype=float))
+    offset_body: Vector = field(default_factory=lambda: np.zeros(3, dtype=float))
+    rotation_body: Vector = field(default_factory=lambda: np.array([1.0, 0.0, 0.0, 0.0], dtype=float))
+
+    def __post_init__(self) -> None:
+        self.scale = _to_scale_vector(self.scale)
+        self.offset_body = _to_vector(self.offset_body, length=3)
+        self.rotation_body = _normalize_quaternion(_to_vector(self.rotation_body, length=4))
 
 
 class MassPointLike(Protocol):
@@ -110,7 +131,16 @@ def _quat_to_matrix(q: Vector) -> np.ndarray:
 
 def _integrate_quaternion(q: Vector, omega_world: Vector, dt: float) -> Vector:
     omega = np.asarray(omega_world, dtype=float).reshape(3)
-    delta = np.array([1.0, 0.5 * omega[0] * dt, 0.5 * omega[1] * dt, 0.5 * omega[2] * dt], dtype=float)
+    angle = float(np.linalg.norm(omega)) * dt
+    if angle <= 1e-12:
+        return _normalize_quaternion(q)
+    axis = omega / float(np.linalg.norm(omega))
+    half = 0.5 * angle
+    delta = np.array(
+        [np.cos(half), axis[0] * np.sin(half), axis[1] * np.sin(half), axis[2] * np.sin(half)],
+        dtype=float,
+    )
+    # Left-multiply because q maps body -> world and omega is expressed in world frame.
     return _normalize_quaternion(_quat_multiply(delta, q))
 
 
@@ -122,6 +152,7 @@ class RigidBody:
     com_velocity: Vector = field(default_factory=lambda: np.zeros(3, dtype=float))
     orientation: Vector = field(default_factory=lambda: np.array([1.0, 0.0, 0.0, 0.0], dtype=float))
     omega_world: Vector = field(default_factory=lambda: np.zeros(3, dtype=float))
+    mesh: MeshMetadata | None = None
 
     def __post_init__(self) -> None:
         if not self.components:
@@ -130,6 +161,8 @@ class RigidBody:
         self.com_velocity = _to_vector(self.com_velocity, length=3)
         self.orientation = _normalize_quaternion(_to_vector(self.orientation, length=4))
         self.omega_world = _to_vector(self.omega_world, length=3)
+        if self.mesh is not None and not isinstance(self.mesh, MeshMetadata):
+            raise ValueError("mesh must be MeshMetadata or None")
 
     @property
     def total_mass(self) -> float:

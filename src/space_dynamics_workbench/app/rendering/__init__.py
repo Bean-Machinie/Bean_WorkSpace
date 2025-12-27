@@ -1,4 +1,4 @@
-from .base import OverlayOptions, Renderer
+from .base import DisplayOptions, OverlayOptions, Renderer
 from ..widgets.scene_view import SceneView as Renderer2D
 
 _renderer_3d_error: str | None = None
@@ -22,4 +22,12 @@ def renderer3d_error() -> str | None:
     return _renderer_3d_error
 
 
-__all__ = ["OverlayOptions", "Renderer", "Renderer2D", "Renderer3D", "renderer3d_available", "renderer3d_error"]
+__all__ = [
+    "DisplayOptions",
+    "OverlayOptions",
+    "Renderer",
+    "Renderer2D",
+    "Renderer3D",
+    "renderer3d_available",
+    "renderer3d_error",
+]

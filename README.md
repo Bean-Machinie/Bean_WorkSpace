@@ -37,6 +37,20 @@ python -m space_dynamics_workbench.app.main
 - Click "Frame Scene" in the toolbar to center the camera on the current points.
 - Select a rigid-body component row in the Inspector to highlight it in 3D.
 
+## Spacecraft Builder (mesh + mass points)
+- Recommended model format: glTF 2.0 (`.gltf`/`.glb`). OBJ/STL are supported as fallbacks.
+- Mesh loading is optional; install extras:
+  `pip install -e .[mesh]`
+- The mesh is visual only. Physics remains driven by rigid-body components (mass points).
+- Portability note: meshes under `assets/` are stored as relative paths; external files are stored as absolute paths.
+
+Basic workflow
+1) Select a RigidBody in the scene.
+2) Open the "Spacecraft Builder" dock and click "Load Model...".
+3) Edit mass components in the table to define the physical model.
+4) Adjust mesh opacity and show/hide mesh or mass points.
+5) Run the simulation as usual.
+
 Run tests
 ```bash
 pytest

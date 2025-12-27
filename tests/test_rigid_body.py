@@ -66,3 +66,42 @@ def test_rigid_body_distances_constant() -> None:
         body.step_kinematic(0.02)
     final_distances = body.pairwise_distances_world()
     np.testing.assert_allclose(initial_distances, final_distances, atol=1e-6)
+
+
+def test_rigid_body_rotation_invariants() -> None:
+    components = [
+        RigidBodyComponent(component_id="A", mass=1.2, position_body=np.array([1.4, -0.2, 0.3])),
+        RigidBodyComponent(component_id="B", mass=0.7, position_body=np.array([-0.6, 0.9, -0.1])),
+        RigidBodyComponent(component_id="C", mass=1.8, position_body=np.array([0.2, -0.7, 0.6])),
+        RigidBodyComponent(component_id="D", mass=0.9, position_body=np.array([-0.3, 0.1, -0.8])),
+    ]
+    body = RigidBody(
+        entity_id="RB-ROT",
+        components=components,
+        com_position=np.array([0.0, 0.0, 0.0]),
+        com_velocity=np.array([0.0, 0.0, 0.0]),
+        orientation=np.array([1.0, 0.0, 0.0, 0.0]),
+        omega_world=np.array([0.0, 0.0, 1.5]),
+    )
+
+    dt = 0.01
+    steps = 100
+    positions_initial = body.component_positions_world()
+    r_norm0 = [np.linalg.norm(pos - body.com_position) for pos in positions_initial]
+
+    for _ in range(steps):
+        body.step_kinematic(dt)
+        positions = body.component_positions_world()
+        velocities = body.component_velocities_world()
+
+        for idx, (pos, vel) in enumerate(zip(positions, velocities)):
+            r_rel = pos - body.com_position
+            v_rel = vel - body.com_velocity
+            r_norm = float(np.linalg.norm(r_rel))
+            v_norm = float(np.linalg.norm(v_rel))
+
+            assert abs(r_norm - r_norm0[idx]) <= 1e-6 * (r_norm0[idx] + 1.0)
+            dot = float(np.dot(v_rel, r_rel))
+            assert abs(dot) <= 1e-6 * (v_norm * r_norm + 1.0)
+            expected = float(np.linalg.norm(np.cross(body.omega_world, r_rel)))
+            assert abs(v_norm - expected) <= 1e-6 * (expected + 1.0)

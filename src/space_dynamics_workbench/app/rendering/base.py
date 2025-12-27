@@ -15,6 +15,13 @@ class OverlayOptions:
     show_grid_yz: bool = False
 
 
+@dataclass
+class DisplayOptions:
+    show_mass_points: bool = True
+    show_mesh: bool = True
+    mesh_opacity: float = 0.35
+
+
 class Renderer(QtWidgets.QWidget):
     entity_selected = QtCore.Signal(str)
     entity_dragged = QtCore.Signal(str, object)
@@ -23,8 +30,10 @@ class Renderer(QtWidgets.QWidget):
         self,
         frame_vectors,
         overlays: OverlayOptions,
+        display: DisplayOptions | None,
         selected_id: str | None,
         selected_component_id: str | None = None,
+        entities=None,
     ) -> None:
         raise NotImplementedError
 

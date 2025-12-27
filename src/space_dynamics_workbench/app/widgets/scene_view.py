@@ -9,7 +9,7 @@ import pyqtgraph as pg
 from PySide6 import QtCore, QtWidgets
 
 from ...core.physics import FrameVectors, VectorSegment
-from ..rendering.base import OverlayOptions, Renderer
+from ..rendering.base import DisplayOptions, OverlayOptions, Renderer
 
 
 class SceneView(Renderer):
@@ -61,10 +61,14 @@ class SceneView(Renderer):
         self,
         frame_vectors: FrameVectors,
         overlays: OverlayOptions,
+        display: DisplayOptions | None,
         selected_id: str | None,
         selected_component_id: str | None = None,
+        entities=None,
     ) -> None:
         _ = selected_component_id
+        _ = entities
+        display_options = display or DisplayOptions()
         positions = list(frame_vectors.positions)
         self._entity_ids = list(frame_vectors.entity_ids)
         self._masses = np.asarray(frame_vectors.masses, dtype=float) if frame_vectors.masses else np.zeros((0,), dtype=float)
@@ -74,6 +78,7 @@ class SceneView(Renderer):
             self._positions = np.zeros((0, 2), dtype=float)
         self._selected_id = selected_id
 
+        self._points.setVisible(display_options.show_mass_points)
         self._refresh_points()
 
         self._origin_marker.setData(pos=np.asarray(frame_vectors.origin[:2], dtype=float).reshape(1, 2))
