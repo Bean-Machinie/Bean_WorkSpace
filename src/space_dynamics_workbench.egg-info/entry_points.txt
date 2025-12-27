@@ -1,0 +1,2 @@
+[console_scripts]
+space-dynamics-workbench = space_dynamics_workbench.app.main:main

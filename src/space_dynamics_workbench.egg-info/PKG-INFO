@@ -1,3 +1,15 @@
+Metadata-Version: 2.4
+Name: space-dynamics-workbench
+Version: 0.1.0
+Summary: Physics-first workspace for spacecraft dynamics visualizations.
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+Requires-Dist: numpy
+Requires-Dist: PySide6
+Requires-Dist: pyqtgraph
+Provides-Extra: dev
+Requires-Dist: pytest; extra == "dev"
+
 # Space Dynamics Workbench
 
 A physics-first workspace for spacecraft dynamics visualizations. The UI only displays and edits state; the physics core owns all state evolution.
