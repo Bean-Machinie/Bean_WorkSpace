@@ -11,7 +11,7 @@ from ..core.physics import FrameChoice, compute_frame_vectors, from_frame
 from ..core.scenarios import load_builtin_scenarios, scenario_registry
 from ..core.sim import Simulation, SymplecticEulerIntegrator
 from ..io.scene_format import SceneData, capture_scene, clone_scene, deserialize_scene, serialize_scene
-from .mesh_generation import generate_mass_points_from_vertices
+from .mesh_generation import generate_mass_points_from_mesh, generate_mass_points_from_vertices
 from .mesh_loading import load_mesh_data, mesh_loading_available, mesh_loading_error
 from .rendering import DisplayOptions, OverlayOptions, Renderer2D, Renderer3D, renderer3d_available, renderer3d_error
 from .widgets import InspectorPanel, InvariantsPanel, SpacecraftBuilderPanel, ViewOptionsPanel
@@ -632,7 +632,8 @@ class MainWindow(QtWidgets.QMainWindow):
         except Exception:
             return []
         vertices = self._apply_mesh_transform(mesh_data.vertices, entity.mesh)
-        points = generate_mass_points_from_vertices(vertices, max_points=5)
+        faces = mesh_data.faces if hasattr(mesh_data, "faces") else None
+        points = generate_mass_points_from_mesh(vertices, faces, max_points=5)
         components = [
             RigidBodyComponent(
                 component_id=f"P{i + 1}",
