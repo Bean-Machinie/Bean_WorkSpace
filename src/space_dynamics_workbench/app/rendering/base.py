@@ -10,6 +10,8 @@ class OverlayOptions:
     show_r_op: bool = False
     show_r_oc: bool = False
     show_r_cp: bool = True
+    show_axes: bool = True
+    show_axis_labels: bool = True
     show_grid_xy: bool = True
     show_grid_xz: bool = False
     show_grid_yz: bool = False

@@ -35,6 +35,54 @@ class _PickingGLViewWidget(gl.GLViewWidget):
         super().mouseReleaseEvent(ev)
 
 
+class _OrientationWidget(QtWidgets.QFrame):
+    def __init__(self, on_select, parent=None) -> None:
+        super().__init__(parent=parent)
+        self._on_select = on_select
+        self.setObjectName("orientationWidget")
+        self.setStyleSheet(
+            "#orientationWidget {"
+            " background-color: rgba(24, 24, 24, 210);"
+            " border: 1px solid rgba(255, 255, 255, 40);"
+            " border-radius: 8px;"
+            "}"
+            "#orientationWidget QToolButton {"
+            " min-width: 28px;"
+            " min-height: 22px;"
+            " padding: 2px 4px;"
+            " border: 1px solid rgba(255, 255, 255, 35);"
+            " border-radius: 4px;"
+            " color: #e6e6e6;"
+            " background-color: rgba(40, 40, 40, 200);"
+            "}"
+            "#orientationWidget QToolButton:hover {"
+            " background-color: rgba(65, 65, 65, 230);"
+            "}"
+            "#orientationWidget QToolButton#axisX { color: #ff5b5b; }"
+            "#orientationWidget QToolButton#axisY { color: #54d46a; }"
+            "#orientationWidget QToolButton#axisZ { color: #5aa9ff; }"
+        )
+
+        layout = QtWidgets.QGridLayout(self)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(6)
+
+        buttons = [
+            ("-X", "axisX", "-x"),
+            ("X", "axisX", "x"),
+            ("-Y", "axisY", "-y"),
+            ("Y", "axisY", "y"),
+            ("-Z", "axisZ", "-z"),
+            ("Z", "axisZ", "z"),
+        ]
+        for idx, (label, obj_name, key) in enumerate(buttons):
+            button = QtWidgets.QToolButton(self)
+            button.setText(label)
+            button.setObjectName(obj_name)
+            button.clicked.connect(lambda _checked=False, k=key: self._on_select(k))
+            layout.addWidget(button, idx // 2, idx % 2)
+
+
 class Renderer3D(Renderer):
     GRID_SIZE = 60.0
     GRID_SPACING_MINOR = 1.0
@@ -64,11 +112,18 @@ class Renderer3D(Renderer):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(self._view)
 
-        self._axis_item = gl.GLAxisItem(size=QtGui.QVector3D(6.0, 6.0, 6.0))
+        self._axis_item = gl.GLAxisItem(size=QtGui.QVector3D(10.0, 10.0, 10.0))
         self._view.addItem(self._axis_item)
         self._axis_lines = self._make_axis_lines()
         for axis_line in self._axis_lines:
             self._view.addItem(axis_line)
+        self._axis_labels = self._make_axis_labels()
+        for label in self._axis_labels:
+            self._view.addItem(label)
+
+        self._orientation_widget = _OrientationWidget(self.set_orientation, self._view)
+        self._orientation_margin = 12
+        self._position_overlay()
 
         self._grid_xy_minor = self._make_grid(self.GRID_SPACING_MINOR, self.GRID_MINOR_COLOR)
         self._grid_xy_major = self._make_grid(self.GRID_SPACING_MAJOR, self.GRID_MAJOR_COLOR)
@@ -152,6 +207,10 @@ class Renderer3D(Renderer):
         self._mesh_items: dict[str, gl.GLMeshItem] = {}
         self._mesh_sources: dict[str, str] = {}
         self._project_root = Path.cwd()
+        self._orientation_timer = QtCore.QTimer(self)
+        self._orientation_timer.setInterval(16)
+        self._orientation_timer.timeout.connect(self._update_orientation_animation)
+        self._orientation_anim = None
 
     def set_view_range(self, view_range: tuple[float, float, float, float]) -> None:
         _ = view_range
@@ -213,6 +272,15 @@ class Renderer3D(Renderer):
         self._grid_xz_major.setVisible(overlays.show_grid_xz)
         self._grid_yz_minor.setVisible(overlays.show_grid_yz)
         self._grid_yz_major.setVisible(overlays.show_grid_yz)
+
+        axis_visible = overlays.show_axes
+        labels_visible = overlays.show_axis_labels and bool(self._axis_labels)
+        self._axis_item.setVisible(axis_visible)
+        for axis_line in self._axis_lines:
+            axis_line.setVisible(axis_visible)
+        for label in self._axis_labels:
+            label.setVisible(labels_visible and axis_visible)
+        self._orientation_widget.setVisible(True)
 
         self._update_meshes(entities, display_options)
 
@@ -286,7 +354,7 @@ class Renderer3D(Renderer):
         return grid
 
     def _make_axis_lines(self) -> List[gl.GLLinePlotItem]:
-        axis_len = 6.0
+        axis_len = 10.0
         line_data = [
             (np.array([[0.0, 0.0, 0.0], [axis_len, 0.0, 0.0]]), (0.9, 0.2, 0.2, 1.0)),
             (np.array([[0.0, 0.0, 0.0], [0.0, axis_len, 0.0]]), (0.2, 0.85, 0.2, 1.0)),
@@ -298,13 +366,133 @@ class Renderer3D(Renderer):
                 gl.GLLinePlotItem(
                     pos=pos.astype(np.float32),
                     color=color,
-                    width=2.0,
+                    width=3.0,
                     antialias=True,
                     mode="lines",
                     glOptions="opaque",
                 )
             )
         return items
+
+    def _make_axis_labels(self) -> List[gl.GLTextItem]:
+        if not hasattr(gl, "GLTextItem"):
+            return []
+        axis_len = 10.0
+        labels = [
+            ("X", (axis_len + 0.6, 0.0, 0.0), QtGui.QColor(235, 90, 90)),
+            ("Y", (0.0, axis_len + 0.6, 0.0), QtGui.QColor(80, 210, 110)),
+            ("Z", (0.0, 0.0, axis_len + 0.6), QtGui.QColor(90, 160, 255)),
+        ]
+        items: List[gl.GLTextItem] = []
+        for text, pos, color in labels:
+            items.append(gl.GLTextItem(pos=pos, text=text, color=color))
+        return items
+
+    def set_orientation(self, key: str) -> None:
+        azimuth, elevation = self._orientation_angles(key)
+        center_vec = self._last_com if self._last_com.size == 3 else np.zeros(3, dtype=float)
+        center = QtGui.QVector3D(float(center_vec[0]), float(center_vec[1]), float(center_vec[2]))
+        distance = float(self._view.opts.get("distance", 20.0))
+        self._animate_to_orientation(center, distance, azimuth, elevation)
+
+    def resizeEvent(self, event: QtGui.QResizeEvent) -> None:
+        super().resizeEvent(event)
+        self._position_overlay()
+
+    def _position_overlay(self) -> None:
+        size = self._orientation_widget.sizeHint()
+        x = max(self._view.width() - size.width() - self._orientation_margin, 0)
+        y = self._orientation_margin
+        self._orientation_widget.move(x, y)
+
+    @staticmethod
+    def _orientation_angles(key: str) -> tuple[float, float]:
+        mapping = {
+            "x": (0.0, 0.0),
+            "-x": (180.0, 0.0),
+            "y": (90.0, 0.0),
+            "-y": (-90.0, 0.0),
+            "z": (0.0, 90.0),
+            "-z": (0.0, -90.0),
+        }
+        return mapping.get(key, (0.0, 0.0))
+
+    def _animate_to_orientation(
+        self, center: QtGui.QVector3D, distance: float, azimuth: float, elevation: float
+    ) -> None:
+        current_center = self._view.opts.get("center", QtGui.QVector3D(0.0, 0.0, 0.0))
+        current_distance = float(self._view.opts.get("distance", distance))
+        current_azimuth = float(self._view.opts.get("azimuth", 0.0))
+        current_elevation = float(self._view.opts.get("elevation", 0.0))
+        self._orientation_anim = {
+            "timer": QtCore.QElapsedTimer(),
+            "duration_ms": 280,
+            "start_center": current_center,
+            "end_center": center,
+            "start_distance": current_distance,
+            "end_distance": distance,
+            "start_azimuth": current_azimuth,
+            "end_azimuth": azimuth,
+            "start_elevation": current_elevation,
+            "end_elevation": elevation,
+        }
+        self._orientation_anim["timer"].start()
+        if not self._orientation_timer.isActive():
+            self._orientation_timer.start()
+
+    def _update_orientation_animation(self) -> None:
+        if self._orientation_anim is None:
+            self._orientation_timer.stop()
+            return
+        elapsed = self._orientation_anim["timer"].elapsed()
+        duration = self._orientation_anim["duration_ms"]
+        t = min(max(elapsed / duration, 0.0), 1.0)
+        ease = t * t * (3.0 - 2.0 * t)
+        center = self._lerp_vec(
+            self._orientation_anim["start_center"],
+            self._orientation_anim["end_center"],
+            ease,
+        )
+        distance = self._lerp(
+            self._orientation_anim["start_distance"],
+            self._orientation_anim["end_distance"],
+            ease,
+        )
+        azimuth = self._lerp_angle(
+            self._orientation_anim["start_azimuth"],
+            self._orientation_anim["end_azimuth"],
+            ease,
+        )
+        elevation = self._lerp(
+            self._orientation_anim["start_elevation"],
+            self._orientation_anim["end_elevation"],
+            ease,
+        )
+        self._view.setCameraPosition(
+            pos=center, distance=float(distance), azimuth=float(azimuth), elevation=float(elevation)
+        )
+        if t >= 1.0:
+            self._orientation_anim = None
+            self._orientation_timer.stop()
+
+    @staticmethod
+    def _lerp(a: float, b: float, t: float) -> float:
+        return a + (b - a) * t
+
+    @staticmethod
+    def _lerp_vec(a: QtGui.QVector3D, b: QtGui.QVector3D, t: float) -> QtGui.QVector3D:
+        return QtGui.QVector3D(
+            a.x() + (b.x() - a.x()) * t,
+            a.y() + (b.y() - a.y()) * t,
+            a.z() + (b.z() - a.z()) * t,
+        )
+
+    @staticmethod
+    def _lerp_angle(a: float, b: float, t: float) -> float:
+        delta = (b - a) % 360.0
+        if delta > 180.0:
+            delta -= 360.0
+        return a + delta * t
 
     def _update_meshes(self, entities, display: DisplayOptions) -> None:
         if not entities or not display.show_mesh:

@@ -142,6 +142,16 @@ class MainWindow(QtWidgets.QMainWindow):
         self._renderer_menu.addAction(self._renderer_3d_action)
 
         view_menu.addSeparator()
+        self._show_axes_action = QtGui.QAction("Show Axes", self)
+        self._show_axes_action.setCheckable(True)
+        self._show_axes_action.toggled.connect(self._on_overlay_action)
+        view_menu.addAction(self._show_axes_action)
+
+        self._show_axis_labels_action = QtGui.QAction("Show Axis Labels", self)
+        self._show_axis_labels_action.setCheckable(True)
+        self._show_axis_labels_action.toggled.connect(self._on_overlay_action)
+        view_menu.addAction(self._show_axis_labels_action)
+
         self._show_r_op_action = QtGui.QAction("Show r_OP", self)
         self._show_r_op_action.setCheckable(True)
         self._show_r_op_action.toggled.connect(self._on_overlay_action)
@@ -172,6 +182,22 @@ class MainWindow(QtWidgets.QMainWindow):
         self._show_grid_yz_action.setCheckable(True)
         self._show_grid_yz_action.toggled.connect(self._on_overlay_action)
         view_menu.addAction(self._show_grid_yz_action)
+
+        view_menu.addSeparator()
+        orientation_menu = view_menu.addMenu("Orientation")
+        self._orientation_actions: dict[str, QtGui.QAction] = {}
+        for label, key in (
+            ("-X", "-x"),
+            ("X", "x"),
+            ("-Y", "-y"),
+            ("Y", "y"),
+            ("-Z", "-z"),
+            ("Z", "z"),
+        ):
+            action = QtGui.QAction(label, self)
+            action.triggered.connect(lambda _checked=False, k=key: self._set_orientation(k))
+            orientation_menu.addAction(action)
+            self._orientation_actions[key] = action
 
         self._inspector_window_action = QtGui.QAction("Inspector", self)
         self._inspector_window_action.setCheckable(True)
@@ -577,6 +603,8 @@ class MainWindow(QtWidgets.QMainWindow):
             show_r_op=self._show_r_op_action.isChecked(),
             show_r_oc=self._show_r_oc_action.isChecked(),
             show_r_cp=self._show_r_cp_action.isChecked(),
+            show_axes=self._show_axes_action.isChecked(),
+            show_axis_labels=self._show_axis_labels_action.isChecked(),
             show_grid_xy=self._show_grid_xy_action.isChecked(),
             show_grid_xz=self._show_grid_xz_action.isChecked(),
             show_grid_yz=self._show_grid_yz_action.isChecked(),
@@ -601,6 +629,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self._set_frame_actions(self._frame_choice)
         current_mode = "3d" if self._renderer is self._renderer_3d else "2d"
         self._set_renderer_actions(current_mode)
+        self._show_axes_action.setChecked(self._overlays.show_axes)
+        self._show_axis_labels_action.setChecked(self._overlays.show_axis_labels)
         self._show_r_op_action.setChecked(self._overlays.show_r_op)
         self._show_r_oc_action.setChecked(self._overlays.show_r_oc)
         self._show_r_cp_action.setChecked(self._overlays.show_r_cp)
@@ -619,6 +649,16 @@ class MainWindow(QtWidgets.QMainWindow):
         self._renderer_2d_action.setChecked(mode == "2d")
         self._renderer_3d_action.setChecked(mode == "3d")
         self._renderer_group.blockSignals(False)
+
+    def _set_orientation(self, key: str) -> None:
+        if isinstance(self._renderer, Renderer3D):
+            self._renderer.set_orientation(key)
+            return
+        QtWidgets.QMessageBox.information(
+            self,
+            "Orientation Unavailable",
+            "Orientation controls are available in 3D mode only.",
+        )
 
     @staticmethod
     def _toggle_dock(dock: QtWidgets.QDockWidget, visible: bool) -> None:
