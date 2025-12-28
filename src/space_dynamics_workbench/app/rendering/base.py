@@ -7,9 +7,9 @@ from PySide6 import QtCore, QtWidgets
 
 @dataclass
 class OverlayOptions:
-    show_r_op: bool = True
-    show_r_oc: bool = True
-    show_r_cp: bool = False
+    show_r_op: bool = False
+    show_r_oc: bool = False
+    show_r_cp: bool = True
     show_grid_xy: bool = True
     show_grid_xz: bool = False
     show_grid_yz: bool = False

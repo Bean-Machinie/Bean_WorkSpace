@@ -22,13 +22,14 @@ class ViewOptionsPanel(QtWidgets.QGroupBox):
         self._renderer_combo = QtWidgets.QComboBox()
         self._renderer_combo.addItem("2D (stable)", "2d")
         self._renderer_combo.addItem("3D (experimental)", "3d")
+        self._renderer_combo.setCurrentIndex(1)
 
         self._show_r_op = QtWidgets.QCheckBox("Show r_OP")
         self._show_r_oc = QtWidgets.QCheckBox("Show r_OC")
         self._show_r_cp = QtWidgets.QCheckBox("Show r_CP")
-        self._show_r_op.setChecked(True)
-        self._show_r_oc.setChecked(True)
-        self._show_r_cp.setChecked(False)
+        self._show_r_op.setChecked(False)
+        self._show_r_oc.setChecked(False)
+        self._show_r_cp.setChecked(True)
 
         self._show_grid_xy = QtWidgets.QCheckBox("Show Grid (XY)")
         self._show_grid_xz = QtWidgets.QCheckBox("Show Grid (XZ)")

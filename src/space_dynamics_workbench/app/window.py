@@ -14,7 +14,7 @@ from ..io.scene_format import SceneData, capture_scene, clone_scene, deserialize
 from .mesh_generation import generate_mass_points_from_mesh, generate_mass_points_from_vertices
 from .mesh_loading import load_mesh_data, mesh_loading_available, mesh_loading_error
 from .rendering import DisplayOptions, OverlayOptions, Renderer2D, Renderer3D, renderer3d_available, renderer3d_error
-from .widgets import InspectorPanel, InvariantsPanel, SpacecraftBuilderPanel, ViewOptionsPanel
+from .widgets import InspectorPanel, InvariantsPanel, SpacecraftBuilderPanel
 from .widgets.spacecraft_builder import MeshInfo
 
 
@@ -29,34 +29,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self._renderer_2d = Renderer2D()
         self._renderer_3d: Renderer2D | Renderer3D | None = None
         self._renderer = self._renderer_2d
-        self._inspector = InspectorPanel()
-        self._invariants = InvariantsPanel()
-        self._view_options = ViewOptionsPanel()
-        self._view_options.set_renderer_availability(
-            renderer3d_available(),
-            renderer3d_error() or "Install 3D extras (PyOpenGL) to enable 3D mode.",
-        )
-
-        side_layout = QtWidgets.QVBoxLayout()
-        side_layout.addWidget(self._view_options)
-        side_layout.addWidget(self._inspector)
-        side_layout.addWidget(self._invariants)
-        side_layout.addStretch(1)
-
-        side_widget = QtWidgets.QWidget()
-        side_widget.setLayout(side_layout)
-        side_widget.setMinimumWidth(280)
 
         self._renderer_stack = QtWidgets.QStackedWidget()
         self._renderer_stack.addWidget(self._renderer_2d)
-
-        central_layout = QtWidgets.QHBoxLayout()
-        central_layout.addWidget(self._renderer_stack, stretch=3)
-        central_layout.addWidget(side_widget, stretch=1)
-
-        central_widget = QtWidgets.QWidget()
-        central_widget.setLayout(central_layout)
-        self.setCentralWidget(central_widget)
+        self.setCentralWidget(self._renderer_stack)
 
         self._builder_panel = SpacecraftBuilderPanel()
         self._builder_dock = QtWidgets.QDockWidget("Spacecraft Builder", self)
@@ -65,6 +41,24 @@ class MainWindow(QtWidgets.QMainWindow):
             QtCore.Qt.LeftDockWidgetArea | QtCore.Qt.RightDockWidgetArea
         )
         self.addDockWidget(QtCore.Qt.RightDockWidgetArea, self._builder_dock)
+
+        self._inspector = InspectorPanel()
+        self._inspector.setTitle("")
+        self._inspector_dock = QtWidgets.QDockWidget("Inspector", self)
+        self._inspector_dock.setWidget(self._inspector)
+        self._inspector_dock.setAllowedAreas(
+            QtCore.Qt.LeftDockWidgetArea | QtCore.Qt.RightDockWidgetArea
+        )
+        self.addDockWidget(QtCore.Qt.LeftDockWidgetArea, self._inspector_dock)
+
+        self._invariants = InvariantsPanel()
+        self._invariants.setTitle("")
+        self._invariants_dock = QtWidgets.QDockWidget("Invariants / Truth Meter", self)
+        self._invariants_dock.setWidget(self._invariants)
+        self._invariants_dock.setAllowedAreas(
+            QtCore.Qt.LeftDockWidgetArea | QtCore.Qt.RightDockWidgetArea
+        )
+        self.addDockWidget(QtCore.Qt.LeftDockWidgetArea, self._invariants_dock)
 
         self._timer = QtCore.QTimer(self)
         self._timer.timeout.connect(self._on_tick)
@@ -88,24 +82,116 @@ class MainWindow(QtWidgets.QMainWindow):
         self._frame_action = QtGui.QAction("Frame Scene", self)
         self._frame_action.triggered.connect(self._frame_scene)
 
-        self._scenario_combo = QtWidgets.QComboBox()
+        menu_bar = self.menuBar()
+        file_menu = menu_bar.addMenu("File")
+        self._scenario_menu = file_menu.addMenu("Scenario")
+        self._scenario_group = QtGui.QActionGroup(self)
+        self._scenario_group.setExclusive(True)
+        self._scenario_actions: dict[str, QtGui.QAction] = {}
         for scenario in scenario_registry.all():
-            self._scenario_combo.addItem(scenario.name, scenario.scenario_id)
-        self._scenario_combo.currentIndexChanged.connect(self._scenario_changed)
+            action = QtGui.QAction(scenario.name, self)
+            action.setCheckable(True)
+            action.setData(scenario.scenario_id)
+            action.triggered.connect(self._on_scenario_action)
+            self._scenario_group.addAction(action)
+            self._scenario_menu.addAction(action)
+            self._scenario_actions[scenario.scenario_id] = action
+        file_menu.addSeparator()
+        file_menu.addAction(self._save_action)
+        file_menu.addAction(self._load_action)
 
-        toolbar = self.addToolBar("Controls")
-        toolbar.setMovable(False)
-        toolbar.addAction(self._play_action)
-        toolbar.addAction(self._step_action)
-        toolbar.addAction(self._reset_action)
-        toolbar.addSeparator()
-        toolbar.addWidget(QtWidgets.QLabel("Scenario:"))
-        toolbar.addWidget(self._scenario_combo)
-        toolbar.addSeparator()
-        toolbar.addAction(self._frame_action)
-        toolbar.addSeparator()
-        toolbar.addAction(self._save_action)
-        toolbar.addAction(self._load_action)
+        edit_menu = menu_bar.addMenu("Edit")
+        edit_menu.addAction(self._play_action)
+        edit_menu.addAction(self._step_action)
+        edit_menu.addAction(self._reset_action)
+
+        view_menu = menu_bar.addMenu("View")
+        view_menu.addAction(self._frame_action)
+        view_menu.addSeparator()
+
+        self._frame_menu = view_menu.addMenu("Reference Frame")
+        self._frame_group = QtGui.QActionGroup(self)
+        self._frame_group.setExclusive(True)
+        self._frame_world_action = QtGui.QAction("World (O)", self)
+        self._frame_world_action.setCheckable(True)
+        self._frame_world_action.setData(FrameChoice.WORLD)
+        self._frame_world_action.triggered.connect(
+            lambda: self._on_frame_action(FrameChoice.WORLD)
+        )
+        self._frame_com_action = QtGui.QAction("Center of Mass (C)", self)
+        self._frame_com_action.setCheckable(True)
+        self._frame_com_action.setData(FrameChoice.COM)
+        self._frame_com_action.triggered.connect(lambda: self._on_frame_action(FrameChoice.COM))
+        self._frame_group.addAction(self._frame_world_action)
+        self._frame_group.addAction(self._frame_com_action)
+        self._frame_menu.addAction(self._frame_world_action)
+        self._frame_menu.addAction(self._frame_com_action)
+
+        self._renderer_menu = view_menu.addMenu("Renderer")
+        self._renderer_group = QtGui.QActionGroup(self)
+        self._renderer_group.setExclusive(True)
+        self._renderer_2d_action = QtGui.QAction("2D (stable)", self)
+        self._renderer_2d_action.setCheckable(True)
+        self._renderer_2d_action.triggered.connect(lambda: self._on_renderer_changed("2d"))
+        self._renderer_3d_action = QtGui.QAction("3D (experimental)", self)
+        self._renderer_3d_action.setCheckable(True)
+        self._renderer_3d_action.triggered.connect(lambda: self._on_renderer_changed("3d"))
+        self._renderer_group.addAction(self._renderer_2d_action)
+        self._renderer_group.addAction(self._renderer_3d_action)
+        self._renderer_menu.addAction(self._renderer_2d_action)
+        self._renderer_menu.addAction(self._renderer_3d_action)
+
+        view_menu.addSeparator()
+        self._show_r_op_action = QtGui.QAction("Show r_OP", self)
+        self._show_r_op_action.setCheckable(True)
+        self._show_r_op_action.toggled.connect(self._on_overlay_action)
+        view_menu.addAction(self._show_r_op_action)
+
+        self._show_r_oc_action = QtGui.QAction("Show r_OC", self)
+        self._show_r_oc_action.setCheckable(True)
+        self._show_r_oc_action.toggled.connect(self._on_overlay_action)
+        view_menu.addAction(self._show_r_oc_action)
+
+        self._show_r_cp_action = QtGui.QAction("Show r_CP", self)
+        self._show_r_cp_action.setCheckable(True)
+        self._show_r_cp_action.toggled.connect(self._on_overlay_action)
+        view_menu.addAction(self._show_r_cp_action)
+
+        view_menu.addSeparator()
+        self._show_grid_xy_action = QtGui.QAction("Show Grid (XY)", self)
+        self._show_grid_xy_action.setCheckable(True)
+        self._show_grid_xy_action.toggled.connect(self._on_overlay_action)
+        view_menu.addAction(self._show_grid_xy_action)
+
+        self._show_grid_xz_action = QtGui.QAction("Show Grid (XZ)", self)
+        self._show_grid_xz_action.setCheckable(True)
+        self._show_grid_xz_action.toggled.connect(self._on_overlay_action)
+        view_menu.addAction(self._show_grid_xz_action)
+
+        self._show_grid_yz_action = QtGui.QAction("Show Grid (YZ)", self)
+        self._show_grid_yz_action.setCheckable(True)
+        self._show_grid_yz_action.toggled.connect(self._on_overlay_action)
+        view_menu.addAction(self._show_grid_yz_action)
+
+        self._inspector_window_action = QtGui.QAction("Inspector", self)
+        self._inspector_window_action.setCheckable(True)
+        self._inspector_window_action.setChecked(False)
+        self._inspector_window_action.toggled.connect(
+            lambda checked: self._toggle_dock(self._inspector_dock, checked)
+        )
+        self._inspector_dock.visibilityChanged.connect(self._inspector_window_action.setChecked)
+        menu_bar.addAction(self._inspector_window_action)
+
+        self._invariants_window_action = QtGui.QAction("Invariants / Truth Meter", self)
+        self._invariants_window_action.setCheckable(True)
+        self._invariants_window_action.setChecked(False)
+        self._invariants_window_action.toggled.connect(
+            lambda checked: self._toggle_dock(self._invariants_dock, checked)
+        )
+        self._invariants_dock.visibilityChanged.connect(self._invariants_window_action.setChecked)
+        menu_bar.addAction(self._invariants_window_action)
+        self._inspector_dock.hide()
+        self._invariants_dock.hide()
 
         self._connect_renderer(self._renderer)
         self._inspector.point_mass_updated.connect(self._on_point_mass_updated)
@@ -119,9 +205,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self._builder_panel.state_updated.connect(self._on_state_updated)
         self._builder_panel.create_blank_requested.connect(self._on_create_blank_requested)
         self._builder_panel.auto_generate_requested.connect(self._on_auto_generate_requested)
-        self._view_options.frame_changed.connect(self._on_frame_changed)
-        self._view_options.overlays_changed.connect(self._on_overlays_changed)
-        self._view_options.renderer_changed.connect(self._on_renderer_changed)
 
         self._simulation: Simulation | None = None
         self._scenario_id: str | None = None
@@ -138,14 +221,35 @@ class MainWindow(QtWidgets.QMainWindow):
             mesh_loading_error() or "Install mesh extras to enable model loading.",
         )
 
-        if self._scenario_combo.count() > 0:
-            self._scenario_combo.setCurrentIndex(0)
-            self._scenario_changed(0)
+        self._sync_view_menu()
+        self._show_grid_xy_action.setChecked(True)
+        self._on_overlay_action()
+        if renderer3d_available():
+            self._renderer_3d_action.setEnabled(True)
+            self._renderer_3d_action.setToolTip("")
+        else:
+            self._renderer_3d_action.setEnabled(False)
+            self._renderer_3d_action.setToolTip(
+                renderer3d_error() or "Install 3D extras (PyOpenGL) to enable 3D mode."
+            )
+        default_renderer = "3d" if renderer3d_available() else "2d"
+        self._on_renderer_changed(default_renderer, warn=False)
 
-    def _scenario_changed(self, index: int) -> None:
-        scenario_id = self._scenario_combo.itemData(index)
+        scenario_ids = [scenario.scenario_id for scenario in scenario_registry.all()]
+        if scenario_ids:
+            self._select_scenario_in_menu(scenario_ids[0])
+            self._set_scenario(scenario_ids[0])
+
+    def _on_scenario_action(self) -> None:
+        action = self.sender()
+        if not isinstance(action, QtGui.QAction):
+            return
+        scenario_id = action.data()
         if scenario_id is None:
             return
+        self._set_scenario(str(scenario_id))
+
+    def _set_scenario(self, scenario_id: str) -> None:
         scenario = scenario_registry.get(scenario_id)
         sim = scenario.create_simulation()
         self._set_simulation(sim, scenario_id)
@@ -448,37 +552,81 @@ class MainWindow(QtWidgets.QMainWindow):
         else:
             sim = Simulation(entities=scene_copy.entities, dt=0.05, integrator=SymplecticEulerIntegrator())
         self._set_simulation(sim, scenario_id)
-        self._select_scenario_in_combo(scenario_id)
+        self._select_scenario_in_menu(scenario_id)
         self._frame_scene_if_needed()
 
-    def _select_scenario_in_combo(self, scenario_id: str | None) -> None:
-        self._scenario_combo.blockSignals(True)
-        if scenario_id is None:
-            self._scenario_combo.setCurrentIndex(-1)
-        else:
-            index = self._scenario_combo.findData(scenario_id)
-            if index >= 0:
-                self._scenario_combo.setCurrentIndex(index)
-            else:
-                self._scenario_combo.setCurrentIndex(-1)
-        self._scenario_combo.blockSignals(False)
+    def _select_scenario_in_menu(self, scenario_id: str | None) -> None:
+        if scenario_id is None or scenario_id not in self._scenario_actions:
+            self._scenario_group.blockSignals(True)
+            for action in self._scenario_group.actions():
+                action.setChecked(False)
+            self._scenario_group.blockSignals(False)
+            return
+        action = self._scenario_actions[scenario_id]
+        self._scenario_group.blockSignals(True)
+        action.setChecked(True)
+        self._scenario_group.blockSignals(False)
 
-    def _on_frame_changed(self, frame: FrameChoice) -> None:
+    def _on_frame_action(self, frame: FrameChoice) -> None:
         self._frame_choice = frame
+        self._set_frame_actions(frame)
         self._update_ui()
 
-    def _on_overlays_changed(self, overlays: OverlayOptions) -> None:
-        self._overlays = overlays
+    def _on_overlay_action(self) -> None:
+        self._overlays = OverlayOptions(
+            show_r_op=self._show_r_op_action.isChecked(),
+            show_r_oc=self._show_r_oc_action.isChecked(),
+            show_r_cp=self._show_r_cp_action.isChecked(),
+            show_grid_xy=self._show_grid_xy_action.isChecked(),
+            show_grid_xz=self._show_grid_xz_action.isChecked(),
+            show_grid_yz=self._show_grid_yz_action.isChecked(),
+        )
         self._update_ui()
 
-    def _on_renderer_changed(self, mode: str) -> None:
-        if mode == "3d":
-            if not renderer3d_available():
-                return
-            renderer = self._ensure_renderer3d()
-        else:
-            renderer = self._renderer_2d
+    def _on_renderer_changed(self, mode: str, warn: bool = True) -> None:
+        if mode == "3d" and not renderer3d_available():
+            if warn:
+                QtWidgets.QMessageBox.information(
+                    self,
+                    "3D Mode Unavailable",
+                    renderer3d_error() or "Install 3D extras (PyOpenGL) to enable 3D mode.",
+                )
+            self._set_renderer_actions("2d")
+            return
+        renderer = self._ensure_renderer3d() if mode == "3d" else self._renderer_2d
         self._swap_renderer(renderer)
+        self._set_renderer_actions(mode)
+
+    def _sync_view_menu(self) -> None:
+        self._set_frame_actions(self._frame_choice)
+        current_mode = "3d" if self._renderer is self._renderer_3d else "2d"
+        self._set_renderer_actions(current_mode)
+        self._show_r_op_action.setChecked(self._overlays.show_r_op)
+        self._show_r_oc_action.setChecked(self._overlays.show_r_oc)
+        self._show_r_cp_action.setChecked(self._overlays.show_r_cp)
+        self._show_grid_xy_action.setChecked(self._overlays.show_grid_xy)
+        self._show_grid_xz_action.setChecked(self._overlays.show_grid_xz)
+        self._show_grid_yz_action.setChecked(self._overlays.show_grid_yz)
+
+    def _set_frame_actions(self, frame: FrameChoice) -> None:
+        self._frame_group.blockSignals(True)
+        self._frame_world_action.setChecked(frame == FrameChoice.WORLD)
+        self._frame_com_action.setChecked(frame == FrameChoice.COM)
+        self._frame_group.blockSignals(False)
+
+    def _set_renderer_actions(self, mode: str) -> None:
+        self._renderer_group.blockSignals(True)
+        self._renderer_2d_action.setChecked(mode == "2d")
+        self._renderer_3d_action.setChecked(mode == "3d")
+        self._renderer_group.blockSignals(False)
+
+    @staticmethod
+    def _toggle_dock(dock: QtWidgets.QDockWidget, visible: bool) -> None:
+        if visible:
+            dock.show()
+            dock.raise_()
+        else:
+            dock.hide()
 
     def _ensure_renderer3d(self) -> Renderer2D | Renderer3D:
         if self._renderer_3d is None:
