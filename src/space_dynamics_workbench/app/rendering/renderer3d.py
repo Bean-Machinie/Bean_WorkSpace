@@ -10,23 +10,49 @@ import numpy as np
 import pyqtgraph.opengl as gl
 from PySide6 import QtCore, QtGui, QtWidgets
 
-from ...core.model import MeshMetadata, RigidBody
+from ...core.model import MeshMetadata, PointMass, RigidBody, resolve_entity_by_id
 from ...core.physics import FrameVectors, VectorSegment
 from ..mesh_loading import load_mesh_data, mesh_loading_available
 from .base import DisplayOptions, OverlayOptions, Renderer
 
 
 class _PickingGLViewWidget(gl.GLViewWidget):
-    def __init__(self, on_click, parent=None) -> None:
+    def __init__(self, on_click, on_press=None, on_move=None, on_release=None, parent=None) -> None:
         super().__init__(parent=parent)
         self._on_click = on_click
+        self._on_press = on_press
+        self._on_move = on_move
+        self._on_release = on_release
         self._press_pos: QtCore.QPointF | None = None
+        self._press_handled = False
 
     def mousePressEvent(self, ev) -> None:
         self._press_pos = ev.position() if hasattr(ev, "position") else ev.localPos()
+        handled = False
+        if self._on_press is not None:
+            handled = bool(self._on_press(ev))
+        self._press_handled = handled
+        if handled:
+            ev.accept()
+            return
         super().mousePressEvent(ev)
 
+    def mouseMoveEvent(self, ev) -> None:
+        if self._on_move is not None:
+            handled = bool(self._on_move(ev))
+            if handled:
+                ev.accept()
+                return
+        super().mouseMoveEvent(ev)
+
     def mouseReleaseEvent(self, ev) -> None:
+        if self._press_handled:
+            if self._on_release is not None:
+                self._on_release(ev)
+            self._press_handled = False
+            self._press_pos = None
+            ev.accept()
+            return
         release_pos = ev.position() if hasattr(ev, "position") else ev.localPos()
         if self._press_pos is not None and ev.button() == QtCore.Qt.MouseButton.LeftButton:
             if (release_pos - self._press_pos).manhattanLength() < 4.0:
@@ -84,6 +110,7 @@ class _OrientationWidget(QtWidgets.QFrame):
 
 
 class Renderer3D(Renderer):
+    transform_requested = QtCore.Signal(str, str, object)
     GRID_SIZE = 60.0
     GRID_SPACING_MINOR = 1.0
     GRID_SPACING_MAJOR = 5.0
@@ -104,7 +131,12 @@ class Renderer3D(Renderer):
     def __init__(self, parent: QtWidgets.QWidget | None = None) -> None:
         super().__init__(parent)
         self._log = logging.getLogger(__name__)
-        self._view = _PickingGLViewWidget(self._handle_click)
+        self._view = _PickingGLViewWidget(
+            self._handle_click,
+            on_press=self._handle_mouse_press,
+            on_move=self._handle_mouse_move,
+            on_release=self._handle_mouse_release,
+        )
         self._view.setBackgroundColor(self.BG_COLOR)
         self._view.opts["distance"] = 20.0
 
@@ -211,6 +243,38 @@ class Renderer3D(Renderer):
         self._orientation_timer.setInterval(16)
         self._orientation_timer.timeout.connect(self._update_orientation_animation)
         self._orientation_anim = None
+        self._interaction_mode = "select"
+        self._selected_entity_id: str | None = None
+        self._selected_component_id: str | None = None
+        self._entities = []
+        self._gizmo_pos = np.zeros(3, dtype=float)
+        self._gizmo_axis_len = 2.8
+        self._gizmo_ring_radius = 2.2
+        self._gizmo_target_id: str | None = None
+        self._dragging = False
+        self._drag_axis: str | None = None
+        self._drag_target_id: str | None = None
+        self._drag_last_pos: QtCore.QPointF | None = None
+        self._drag_axis_dir = np.zeros(3, dtype=float)
+        self._drag_screen_dir = np.zeros(2, dtype=float)
+        self._drag_scale = 0.01
+        self._rotate_scale_deg = 0.35
+
+        self._gizmo_x = self._make_gizmo_line((1.0, 0.2, 0.2, 1.0))
+        self._gizmo_y = self._make_gizmo_line((0.2, 0.85, 0.2, 1.0))
+        self._gizmo_z = self._make_gizmo_line((0.2, 0.5, 0.95, 1.0))
+        self._gizmo_rx = self._make_gizmo_ring((1.0, 0.45, 0.45, 0.9))
+        self._gizmo_ry = self._make_gizmo_ring((0.45, 1.0, 0.55, 0.9))
+        self._gizmo_rz = self._make_gizmo_ring((0.45, 0.65, 1.0, 0.9))
+        for item in (
+            self._gizmo_x,
+            self._gizmo_y,
+            self._gizmo_z,
+            self._gizmo_rx,
+            self._gizmo_ry,
+            self._gizmo_rz,
+        ):
+            self._view.addItem(item)
 
     def set_view_range(self, view_range: tuple[float, float, float, float]) -> None:
         _ = view_range
@@ -225,6 +289,9 @@ class Renderer3D(Renderer):
         entities=None,
     ) -> None:
         display_options = display or DisplayOptions()
+        self._selected_entity_id = selected_id
+        self._selected_component_id = selected_component_id
+        self._entities = list(entities) if entities is not None else []
         positions = self._to_3d_stack(frame_vectors.positions)
         self._positions = positions
         self._entity_ids = list(frame_vectors.entity_ids)
@@ -283,6 +350,7 @@ class Renderer3D(Renderer):
         self._orientation_widget.setVisible(True)
 
         self._update_meshes(entities, display_options)
+        self._update_gizmo()
 
     def clear(self) -> None:
         self._points_item.setData(pos=np.zeros((0, 3), dtype=np.float32))
@@ -387,6 +455,291 @@ class Renderer3D(Renderer):
         for text, pos, color in labels:
             items.append(gl.GLTextItem(pos=pos, text=text, color=color))
         return items
+
+    def set_interaction_mode(self, mode: str) -> None:
+        if mode not in {"select", "move", "rotate"}:
+            return
+        self._interaction_mode = mode
+        self._update_gizmo()
+
+    def _make_gizmo_line(self, color: tuple[float, float, float, float]) -> gl.GLLinePlotItem:
+        return gl.GLLinePlotItem(
+            pos=np.zeros((0, 3), dtype=np.float32),
+            color=color,
+            width=4.0,
+            antialias=True,
+            mode="lines",
+            glOptions="opaque",
+        )
+
+    def _make_gizmo_ring(self, color: tuple[float, float, float, float]) -> gl.GLLinePlotItem:
+        return gl.GLLinePlotItem(
+            pos=np.zeros((0, 3), dtype=np.float32),
+            color=color,
+            width=2.0,
+            antialias=True,
+            mode="line_strip",
+            glOptions="opaque",
+        )
+
+    def _update_gizmo(self) -> None:
+        target_id = self._resolve_gizmo_target()
+        self._gizmo_target_id = target_id
+        if target_id is None or self._interaction_mode == "select":
+            self._set_gizmo_visibility(False, False)
+            return
+        center = self._target_world_position(target_id)
+        if center is None:
+            self._set_gizmo_visibility(False, False)
+            return
+        self._gizmo_pos = center
+        axis_len = self._gizmo_axis_len
+        center_vec = center.astype(np.float32, copy=False)
+        if self._interaction_mode == "move":
+            self._gizmo_x.setData(
+                pos=np.asarray([center_vec, center_vec + np.array([axis_len, 0.0, 0.0], dtype=np.float32)])
+            )
+            self._gizmo_y.setData(
+                pos=np.asarray([center_vec, center_vec + np.array([0.0, axis_len, 0.0], dtype=np.float32)])
+            )
+            self._gizmo_z.setData(
+                pos=np.asarray([center_vec, center_vec + np.array([0.0, 0.0, axis_len], dtype=np.float32)])
+            )
+            self._set_gizmo_visibility(True, False)
+            return
+        if self._interaction_mode == "rotate":
+            ring = self._gizmo_ring_radius
+            points = np.linspace(0.0, 2.0 * np.pi, 72, endpoint=True)
+            cos_vals = np.cos(points) * ring
+            sin_vals = np.sin(points) * ring
+            ring_x = np.column_stack((np.zeros_like(cos_vals), cos_vals, sin_vals)).astype(np.float32)
+            ring_y = np.column_stack((cos_vals, np.zeros_like(cos_vals), sin_vals)).astype(np.float32)
+            ring_z = np.column_stack((cos_vals, sin_vals, np.zeros_like(cos_vals))).astype(np.float32)
+            self._gizmo_rx.setData(pos=(ring_x + center_vec))
+            self._gizmo_ry.setData(pos=(ring_y + center_vec))
+            self._gizmo_rz.setData(pos=(ring_z + center_vec))
+            self._set_gizmo_visibility(False, True)
+
+    def _set_gizmo_visibility(self, axes: bool, rings: bool) -> None:
+        self._gizmo_x.setVisible(axes)
+        self._gizmo_y.setVisible(axes)
+        self._gizmo_z.setVisible(axes)
+        self._gizmo_rx.setVisible(rings)
+        self._gizmo_ry.setVisible(rings)
+        self._gizmo_rz.setVisible(rings)
+
+    def _resolve_gizmo_target(self) -> str | None:
+        if self._selected_entity_id is None:
+            return None
+        if self._interaction_mode == "move" and self._selected_component_id is not None:
+            return self._selected_component_id
+        if self._interaction_mode == "rotate":
+            entity, _ = resolve_entity_by_id(self._entities, self._selected_entity_id)
+            if isinstance(entity, RigidBody):
+                return entity.entity_id
+            return None
+        return self._selected_entity_id
+
+    def _target_world_position(self, target_id: str) -> np.ndarray | None:
+        entity, component = resolve_entity_by_id(self._entities, target_id)
+        if entity is None:
+            return None
+        if isinstance(entity, PointMass):
+            return self._to_3d(entity.position)
+        if not isinstance(entity, RigidBody):
+            return None
+        if component is None:
+            return np.asarray(entity.com_position, dtype=float)
+        rotation = entity.rotation_matrix()
+        return np.asarray(entity.com_position + rotation @ component.position_body, dtype=float)
+
+    def _handle_mouse_press(self, ev) -> bool:
+        if ev.button() != QtCore.Qt.MouseButton.LeftButton:
+            return False
+        if self._interaction_mode == "select":
+            return False
+        view_pos = ev.position() if hasattr(ev, "position") else ev.localPos()
+        if self._interaction_mode == "move":
+            axis = self._pick_gizmo_axis(view_pos)
+            if axis is not None:
+                return self._start_drag(axis, view_pos)
+        if self._interaction_mode == "rotate":
+            axis = self._pick_gizmo_ring(view_pos)
+            if axis is not None:
+                return self._start_drag(axis, view_pos)
+        picked = self._pick_entity(view_pos)
+        if picked is not None:
+            self.entity_selected.emit(picked)
+            return True
+        return False
+
+    def _handle_mouse_move(self, ev) -> bool:
+        if not self._dragging:
+            return False
+        if not (ev.buttons() & QtCore.Qt.MouseButton.LeftButton):
+            self._stop_drag()
+            return True
+        view_pos = ev.position() if hasattr(ev, "position") else ev.localPos()
+        if self._drag_last_pos is None or self._drag_target_id is None:
+            return True
+        delta = view_pos - self._drag_last_pos
+        if self._interaction_mode == "move":
+            delta_pixels = delta.x() * self._drag_screen_dir[0] + delta.y() * self._drag_screen_dir[1]
+            delta_world = self._drag_axis_dir * (delta_pixels * self._drag_scale)
+            self.transform_requested.emit(self._drag_target_id, "move", delta_world)
+        elif self._interaction_mode == "rotate":
+            angle_deg = delta.x() * self._rotate_scale_deg
+            self.transform_requested.emit(
+                self._drag_target_id,
+                "rotate",
+                {"axis": self._drag_axis_dir.copy(), "angle_deg": float(angle_deg)},
+            )
+        self._drag_last_pos = view_pos
+        return True
+
+    def _handle_mouse_release(self, ev) -> bool:
+        if self._dragging:
+            self._stop_drag()
+            return True
+        return False
+
+    def _start_drag(self, axis: str, view_pos: QtCore.QPointF) -> bool:
+        if self._gizmo_target_id is None:
+            return False
+        axis_dir = {
+            "x": np.array([1.0, 0.0, 0.0], dtype=float),
+            "y": np.array([0.0, 1.0, 0.0], dtype=float),
+            "z": np.array([0.0, 0.0, 1.0], dtype=float),
+        }.get(axis)
+        if axis_dir is None:
+            return False
+        self._dragging = True
+        self._drag_axis = axis
+        self._drag_target_id = self._gizmo_target_id
+        self._drag_last_pos = view_pos
+        self._drag_axis_dir = axis_dir
+        if self._interaction_mode == "move":
+            center = self._screen_for_world(self._gizmo_pos)
+            end = self._screen_for_world(self._gizmo_pos + axis_dir * self._gizmo_axis_len)
+            if center is None or end is None:
+                self._drag_screen_dir = np.array([1.0, 0.0], dtype=float)
+                self._drag_scale = 0.01
+                return True
+            screen_vec = np.array([end.x() - center.x(), end.y() - center.y()], dtype=float)
+            screen_len = float(np.hypot(screen_vec[0], screen_vec[1]))
+            if screen_len <= 1e-6:
+                self._drag_screen_dir = np.array([1.0, 0.0], dtype=float)
+                self._drag_scale = 0.01
+            else:
+                self._drag_screen_dir = screen_vec / screen_len
+                self._drag_scale = self._gizmo_axis_len / screen_len
+        return True
+
+    def _stop_drag(self) -> None:
+        self._dragging = False
+        self._drag_axis = None
+        self._drag_target_id = None
+        self._drag_last_pos = None
+
+    def _pick_gizmo_axis(self, view_pos: QtCore.QPointF) -> str | None:
+        if self._gizmo_target_id is None:
+            return None
+        center = self._screen_for_world(self._gizmo_pos)
+        if center is None:
+            return None
+        threshold = 8.0
+        best_axis = None
+        best_dist = float("inf")
+        for axis, axis_dir in (
+            ("x", np.array([1.0, 0.0, 0.0], dtype=float)),
+            ("y", np.array([0.0, 1.0, 0.0], dtype=float)),
+            ("z", np.array([0.0, 0.0, 1.0], dtype=float)),
+        ):
+            end = self._screen_for_world(self._gizmo_pos + axis_dir * self._gizmo_axis_len)
+            if end is None:
+                continue
+            dist = self._distance_to_segment(view_pos, center, end)
+            if dist < best_dist:
+                best_dist = dist
+                best_axis = axis
+        if best_dist <= threshold:
+            return best_axis
+        return None
+
+    def _pick_gizmo_ring(self, view_pos: QtCore.QPointF) -> str | None:
+        if self._gizmo_target_id is None:
+            return None
+        threshold = 8.0
+        rings = {
+            "x": self._build_ring_points(axis="x"),
+            "y": self._build_ring_points(axis="y"),
+            "z": self._build_ring_points(axis="z"),
+        }
+        best_axis = None
+        best_dist = float("inf")
+        for axis, points in rings.items():
+            screen_points = []
+            for point in points:
+                screen = self._screen_for_world(point)
+                if screen is None:
+                    screen_points = []
+                    break
+                screen_points.append(screen)
+            if len(screen_points) < 2:
+                continue
+            dist = self._distance_to_polyline(view_pos, screen_points)
+            if dist < best_dist:
+                best_dist = dist
+                best_axis = axis
+        if best_dist <= threshold:
+            return best_axis
+        return None
+
+    def _build_ring_points(self, axis: str) -> np.ndarray:
+        ring = self._gizmo_ring_radius
+        points = np.linspace(0.0, 2.0 * np.pi, 36, endpoint=False)
+        cos_vals = np.cos(points) * ring
+        sin_vals = np.sin(points) * ring
+        if axis == "x":
+            base = np.column_stack((np.zeros_like(cos_vals), cos_vals, sin_vals))
+        elif axis == "y":
+            base = np.column_stack((cos_vals, np.zeros_like(cos_vals), sin_vals))
+        else:
+            base = np.column_stack((cos_vals, sin_vals, np.zeros_like(cos_vals)))
+        return base + self._gizmo_pos.reshape(1, 3)
+
+    def _screen_for_world(self, pos: np.ndarray) -> QtCore.QPointF | None:
+        viewport = (0, 0, self._viewport_size[0], self._viewport_size[1])
+        projection = self._view.projectionMatrix(viewport, viewport)
+        modelview = self._view.viewMatrix()
+        return self._project_point(pos, modelview, projection, viewport)
+
+    @staticmethod
+    def _distance_to_segment(p: QtCore.QPointF, a: QtCore.QPointF, b: QtCore.QPointF) -> float:
+        ax, ay = a.x(), a.y()
+        bx, by = b.x(), b.y()
+        px, py = p.x(), p.y()
+        dx = bx - ax
+        dy = by - ay
+        if abs(dx) < 1e-6 and abs(dy) < 1e-6:
+            return float(np.hypot(px - ax, py - ay))
+        t = ((px - ax) * dx + (py - ay) * dy) / (dx * dx + dy * dy)
+        t = max(0.0, min(1.0, t))
+        proj_x = ax + t * dx
+        proj_y = ay + t * dy
+        return float(np.hypot(px - proj_x, py - proj_y))
+
+    @classmethod
+    def _distance_to_polyline(cls, p: QtCore.QPointF, points: list[QtCore.QPointF]) -> float:
+        if len(points) < 2:
+            return float("inf")
+        min_dist = float("inf")
+        for idx in range(len(points) - 1):
+            dist = cls._distance_to_segment(p, points[idx], points[idx + 1])
+            if dist < min_dist:
+                min_dist = dist
+        dist = cls._distance_to_segment(p, points[-1], points[0])
+        return min(dist, min_dist)
 
     def set_orientation(self, key: str) -> None:
         azimuth, elevation = self._orientation_angles(key)

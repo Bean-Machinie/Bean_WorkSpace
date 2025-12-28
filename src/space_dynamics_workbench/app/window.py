@@ -219,6 +219,34 @@ class MainWindow(QtWidgets.QMainWindow):
         self._inspector_dock.hide()
         self._invariants_dock.hide()
 
+        self._interaction_mode = "select"
+        self._interaction_toolbar = QtWidgets.QToolBar("Transform", self)
+        self._interaction_toolbar.setMovable(False)
+        self._interaction_toolbar.setOrientation(QtCore.Qt.Vertical)
+        self._interaction_toolbar.setToolButtonStyle(QtCore.Qt.ToolButtonTextOnly)
+        self.addToolBar(QtCore.Qt.LeftToolBarArea, self._interaction_toolbar)
+        self._interaction_group = QtGui.QActionGroup(self)
+        self._interaction_group.setExclusive(True)
+
+        self._select_tool_action = QtGui.QAction("Select", self)
+        self._select_tool_action.setCheckable(True)
+        self._select_tool_action.setChecked(True)
+        self._select_tool_action.triggered.connect(lambda: self._set_interaction_mode("select"))
+        self._interaction_group.addAction(self._select_tool_action)
+        self._interaction_toolbar.addAction(self._select_tool_action)
+
+        self._move_tool_action = QtGui.QAction("Move", self)
+        self._move_tool_action.setCheckable(True)
+        self._move_tool_action.triggered.connect(lambda: self._set_interaction_mode("move"))
+        self._interaction_group.addAction(self._move_tool_action)
+        self._interaction_toolbar.addAction(self._move_tool_action)
+
+        self._rotate_tool_action = QtGui.QAction("Rotate", self)
+        self._rotate_tool_action.setCheckable(True)
+        self._rotate_tool_action.triggered.connect(lambda: self._set_interaction_mode("rotate"))
+        self._interaction_group.addAction(self._rotate_tool_action)
+        self._interaction_toolbar.addAction(self._rotate_tool_action)
+
         self._connect_renderer(self._renderer)
         self._inspector.point_mass_updated.connect(self._on_point_mass_updated)
         self._inspector.rigid_body_updated.connect(self._on_rigid_body_updated)
@@ -260,6 +288,7 @@ class MainWindow(QtWidgets.QMainWindow):
             )
         default_renderer = "3d" if renderer3d_available() else "2d"
         self._on_renderer_changed(default_renderer, warn=False)
+        self._interaction_toolbar.setVisible(Renderer3D is not None and isinstance(self._renderer, Renderer3D))
 
         scenario_ids = [scenario.scenario_id for scenario in scenario_registry.all()]
         if scenario_ids:
@@ -650,8 +679,67 @@ class MainWindow(QtWidgets.QMainWindow):
         self._renderer_3d_action.setChecked(mode == "3d")
         self._renderer_group.blockSignals(False)
 
+    def _set_interaction_mode(self, mode: str) -> None:
+        self._interaction_mode = mode
+        if Renderer3D is not None and isinstance(self._renderer, Renderer3D):
+            self._renderer.set_interaction_mode(mode)
+
+    def _on_transform_requested(self, entity_id: str, mode: str, payload: object) -> None:
+        if self._simulation is None:
+            return
+        entity, component = resolve_entity_by_id(self._simulation.entities, entity_id)
+        if entity is None:
+            return
+        if mode == "move":
+            delta = np.asarray(payload, dtype=float).reshape(-1)
+            if isinstance(entity, PointMass):
+                if entity.position.size == 2:
+                    entity.position = entity.position + delta[:2]
+                else:
+                    entity.position = entity.position + delta[: entity.position.size]
+                self._update_ui()
+                return
+            if not isinstance(entity, RigidBody):
+                return
+            if component is None:
+                entity.com_position = entity.com_position + delta[:3]
+                self._update_ui()
+                return
+            rotation = entity.rotation_matrix()
+            delta_body = rotation.T @ delta[:3]
+            new_components = []
+            for comp in entity.components:
+                if comp.component_id == component.component_id:
+                    new_components.append(
+                        RigidBodyComponent(
+                            component_id=comp.component_id,
+                            mass=comp.mass,
+                            position_body=comp.position_body + delta_body,
+                        )
+                    )
+                else:
+                    new_components.append(comp)
+            entity.components = new_components
+            self._update_ui()
+            return
+        if mode == "rotate":
+            if not isinstance(entity, RigidBody):
+                return
+            if not isinstance(payload, dict):
+                return
+            axis = np.asarray(payload.get("axis", [0.0, 0.0, 1.0]), dtype=float).reshape(3)
+            angle_deg = float(payload.get("angle_deg", 0.0))
+            axis_norm = float(np.linalg.norm(axis))
+            if axis_norm <= 1e-9 or abs(angle_deg) <= 1e-9:
+                return
+            axis = axis / axis_norm
+            q_delta = self._quat_from_axis_angle(axis, np.deg2rad(angle_deg))
+            entity.orientation = self._normalize_quaternion(self._quat_multiply(q_delta, entity.orientation))
+            self._update_ui()
+            return
+
     def _set_orientation(self, key: str) -> None:
-        if isinstance(self._renderer, Renderer3D):
+        if Renderer3D is not None and isinstance(self._renderer, Renderer3D):
             self._renderer.set_orientation(key)
             return
         QtWidgets.QMessageBox.information(
@@ -685,10 +773,16 @@ class MainWindow(QtWidgets.QMainWindow):
         self._renderer_stack.setCurrentWidget(renderer)
         self._update_ui()
         self._frame_scene_if_needed()
+        show_tools = Renderer3D is not None and isinstance(renderer, Renderer3D)
+        self._interaction_toolbar.setVisible(show_tools)
+        if show_tools:
+            renderer.set_interaction_mode(self._interaction_mode)
 
     def _connect_renderer(self, renderer) -> None:
         renderer.entity_selected.connect(self._on_entity_selected)
         renderer.entity_dragged.connect(self._on_entity_dragged)
+        if hasattr(renderer, "transform_requested"):
+            renderer.transform_requested.connect(self._on_transform_requested)
 
     def _disconnect_renderer(self, renderer) -> None:
         try:
@@ -699,6 +793,11 @@ class MainWindow(QtWidgets.QMainWindow):
             renderer.entity_dragged.disconnect(self._on_entity_dragged)
         except (TypeError, RuntimeError):
             pass
+        if hasattr(renderer, "transform_requested"):
+            try:
+                renderer.transform_requested.disconnect(self._on_transform_requested)
+            except (TypeError, RuntimeError):
+                pass
 
     def _save_scene(self) -> None:
         if self._simulation is None:
@@ -797,6 +896,33 @@ class MainWindow(QtWidgets.QMainWindow):
         if norm <= 0.0:
             return np.array([1.0, 0.0, 0.0, 0.0], dtype=float)
         return q_arr / norm
+
+    @staticmethod
+    def _quat_multiply(q_left: np.ndarray, q_right: np.ndarray) -> np.ndarray:
+        w1, x1, y1, z1 = np.asarray(q_left, dtype=float).reshape(4)
+        w2, x2, y2, z2 = np.asarray(q_right, dtype=float).reshape(4)
+        return np.array(
+            [
+                w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2,
+                w1 * x2 + x1 * w2 + y1 * z2 - z1 * y2,
+                w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2,
+                w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2,
+            ],
+            dtype=float,
+        )
+
+    @staticmethod
+    def _quat_from_axis_angle(axis: np.ndarray, angle_rad: float) -> np.ndarray:
+        axis = np.asarray(axis, dtype=float).reshape(3)
+        norm = float(np.linalg.norm(axis))
+        if norm <= 1e-12:
+            return np.array([1.0, 0.0, 0.0, 0.0], dtype=float)
+        axis = axis / norm
+        half = 0.5 * angle_rad
+        return np.array(
+            [np.cos(half), axis[0] * np.sin(half), axis[1] * np.sin(half), axis[2] * np.sin(half)],
+            dtype=float,
+        )
 
     @staticmethod
     def _is_default_blank_components(components: list[RigidBodyComponent]) -> bool:
