@@ -9,7 +9,6 @@ from PySide6 import QtCore, QtGui, QtWidgets
 from ..core.model import MeshMetadata, PointMass, RigidBody, RigidBodyComponent, resolve_entity_by_id
 from ..core.physics import FrameChoice, compute_frame_vectors, from_frame
 from ..core.scenarios import load_builtin_scenarios, scenario_registry
-from ..core.scenario_definition import PointMassDefinition, RigidBodyDefinition
 from ..core.sim import Simulation, SymplecticEulerIntegrator
 from ..io.scene_format import SceneData, capture_scene, clone_scene, deserialize_scene, serialize_scene
 from .scenario_controller import ScenarioController
@@ -20,7 +19,7 @@ from .widgets import (
     InspectorPanel,
     InvariantsPanel,
     NewScenarioDialog,
-    ScenarioPanel,
+    ScenarioSettingsDialog,
     SimulationPanel,
     SpacecraftEditorPanel,
 )
@@ -42,6 +41,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self._renderer_stack = QtWidgets.QStackedWidget()
         self._renderer_stack.addWidget(self._renderer_2d)
         self.setCentralWidget(self._renderer_stack)
+        self.setDockOptions(
+            QtWidgets.QMainWindow.AllowTabbedDocks
+            | QtWidgets.QMainWindow.AllowNestedDocks
+            | QtWidgets.QMainWindow.AnimatedDocks
+        )
 
         self._builder_panel = SpacecraftEditorPanel()
         self._builder_dock = QtWidgets.QDockWidget("Spacecraft Editor", self)
@@ -49,15 +53,15 @@ class MainWindow(QtWidgets.QMainWindow):
         self._builder_dock.setAllowedAreas(
             QtCore.Qt.LeftDockWidgetArea | QtCore.Qt.RightDockWidgetArea
         )
-        self.addDockWidget(QtCore.Qt.RightDockWidgetArea, self._builder_dock)
-
-        self._scenario_panel = ScenarioPanel()
-        self._scenario_dock = QtWidgets.QDockWidget("Scenario", self)
-        self._scenario_dock.setWidget(self._scenario_panel)
-        self._scenario_dock.setAllowedAreas(
-            QtCore.Qt.LeftDockWidgetArea | QtCore.Qt.RightDockWidgetArea
+        self._builder_dock.setFeatures(
+            QtWidgets.QDockWidget.DockWidgetClosable
+            | QtWidgets.QDockWidget.DockWidgetMovable
+            | QtWidgets.QDockWidget.DockWidgetFloatable
         )
-        self.addDockWidget(QtCore.Qt.LeftDockWidgetArea, self._scenario_dock)
+        self._builder_panel.setSizePolicy(
+            QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding
+        )
+        self.addDockWidget(QtCore.Qt.RightDockWidgetArea, self._builder_dock)
 
         self._simulation_panel = SimulationPanel()
         self._simulation_dock = QtWidgets.QDockWidget("Simulation", self)
@@ -65,7 +69,16 @@ class MainWindow(QtWidgets.QMainWindow):
         self._simulation_dock.setAllowedAreas(
             QtCore.Qt.LeftDockWidgetArea | QtCore.Qt.RightDockWidgetArea
         )
+        self._simulation_dock.setFeatures(
+            QtWidgets.QDockWidget.DockWidgetClosable
+            | QtWidgets.QDockWidget.DockWidgetMovable
+            | QtWidgets.QDockWidget.DockWidgetFloatable
+        )
+        self._simulation_panel.setSizePolicy(
+            QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding
+        )
         self.addDockWidget(QtCore.Qt.LeftDockWidgetArea, self._simulation_dock)
+        self._simulation_dock.hide()
 
         self._inspector = InspectorPanel()
         self._inspector.setTitle("")
@@ -74,6 +87,12 @@ class MainWindow(QtWidgets.QMainWindow):
         self._inspector_dock.setAllowedAreas(
             QtCore.Qt.LeftDockWidgetArea | QtCore.Qt.RightDockWidgetArea
         )
+        self._inspector_dock.setFeatures(
+            QtWidgets.QDockWidget.DockWidgetClosable
+            | QtWidgets.QDockWidget.DockWidgetMovable
+            | QtWidgets.QDockWidget.DockWidgetFloatable
+        )
+        self._inspector.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
         self.addDockWidget(QtCore.Qt.LeftDockWidgetArea, self._inspector_dock)
 
         self._invariants = InvariantsPanel()
@@ -83,6 +102,12 @@ class MainWindow(QtWidgets.QMainWindow):
         self._invariants_dock.setAllowedAreas(
             QtCore.Qt.LeftDockWidgetArea | QtCore.Qt.RightDockWidgetArea
         )
+        self._invariants_dock.setFeatures(
+            QtWidgets.QDockWidget.DockWidgetClosable
+            | QtWidgets.QDockWidget.DockWidgetMovable
+            | QtWidgets.QDockWidget.DockWidgetFloatable
+        )
+        self._invariants.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
         self.addDockWidget(QtCore.Qt.LeftDockWidgetArea, self._invariants_dock)
 
         self._timer = QtCore.QTimer(self)
@@ -131,11 +156,6 @@ class MainWindow(QtWidgets.QMainWindow):
         file_menu.addAction(self._load_action)
 
         scenario_menu = menu_bar.addMenu("Scenario")
-        self._add_spacecraft_action = QtGui.QAction("Add Spacecraft...", self)
-        self._add_spacecraft_action.triggered.connect(self._on_add_spacecraft_requested)
-        scenario_menu.addAction(self._add_spacecraft_action)
-
-        scenario_menu.addSeparator()
         self._builtin_scenario_menu = scenario_menu.addMenu("Built-in Scenarios")
         self._scenario_group = QtGui.QActionGroup(self)
         self._scenario_group.setExclusive(True)
@@ -150,6 +170,14 @@ class MainWindow(QtWidgets.QMainWindow):
             self._scenario_actions[scenario.scenario_id] = action
 
         edit_menu = menu_bar.addMenu("Edit")
+        self._add_spacecraft_action = QtGui.QAction("Add Spacecraft...", self)
+        self._add_spacecraft_action.triggered.connect(self._on_add_spacecraft_requested)
+        self._scenario_settings_action = QtGui.QAction("Scenario Settings...", self)
+        self._scenario_settings_action.triggered.connect(self._open_scenario_settings)
+
+        edit_menu.addAction(self._add_spacecraft_action)
+        edit_menu.addAction(self._scenario_settings_action)
+        edit_menu.addSeparator()
         edit_menu.addAction(self._play_action)
         edit_menu.addAction(self._step_action)
         edit_menu.addAction(self._reset_action)
@@ -248,6 +276,25 @@ class MainWindow(QtWidgets.QMainWindow):
             orientation_menu.addAction(action)
             self._orientation_actions[key] = action
 
+        view_menu.addSeparator()
+        self._spacecraft_editor_window_action = QtGui.QAction("Spacecraft Editor", self)
+        self._spacecraft_editor_window_action.setCheckable(True)
+        self._spacecraft_editor_window_action.setChecked(True)
+        self._spacecraft_editor_window_action.toggled.connect(
+            lambda checked: self._toggle_dock(self._builder_dock, checked)
+        )
+        self._builder_dock.visibilityChanged.connect(self._spacecraft_editor_window_action.setChecked)
+        view_menu.addAction(self._spacecraft_editor_window_action)
+
+        self._simulation_window_action = QtGui.QAction("Simulation", self)
+        self._simulation_window_action.setCheckable(True)
+        self._simulation_window_action.setChecked(True)
+        self._simulation_window_action.toggled.connect(
+            lambda checked: self._toggle_dock(self._simulation_dock, checked)
+        )
+        self._simulation_dock.visibilityChanged.connect(self._simulation_window_action.setChecked)
+        view_menu.addAction(self._simulation_window_action)
+
         self._inspector_window_action = QtGui.QAction("Inspector", self)
         self._inspector_window_action.setCheckable(True)
         self._inspector_window_action.setChecked(False)
@@ -255,7 +302,7 @@ class MainWindow(QtWidgets.QMainWindow):
             lambda checked: self._toggle_dock(self._inspector_dock, checked)
         )
         self._inspector_dock.visibilityChanged.connect(self._inspector_window_action.setChecked)
-        menu_bar.addAction(self._inspector_window_action)
+        view_menu.addAction(self._inspector_window_action)
 
         self._invariants_window_action = QtGui.QAction("Invariants / Truth Meter", self)
         self._invariants_window_action.setCheckable(True)
@@ -264,7 +311,7 @@ class MainWindow(QtWidgets.QMainWindow):
             lambda checked: self._toggle_dock(self._invariants_dock, checked)
         )
         self._invariants_dock.visibilityChanged.connect(self._invariants_window_action.setChecked)
-        menu_bar.addAction(self._invariants_window_action)
+        view_menu.addAction(self._invariants_window_action)
         self._inspector_dock.hide()
         self._invariants_dock.hide()
 
@@ -317,9 +364,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self._builder_panel.initial_state_changed.connect(self._on_state_updated)
         self._builder_panel.reset_spacecraft_requested.connect(self._on_reset_spacecraft_requested)
         self._builder_panel.auto_generate_requested.connect(self._on_auto_generate_requested)
-        self._scenario_panel.add_spacecraft_requested.connect(self._on_add_spacecraft_requested)
-        self._scenario_panel.name_changed.connect(self._on_scenario_name_changed)
-        self._scenario_panel.object_selected.connect(self._on_object_selected)
         self._simulation_panel.settings_changed.connect(self._on_simulation_settings_changed)
 
         self._simulation: Simulation | None = None
@@ -437,10 +481,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self._sync_scenario_ui()
         self._update_ui()
 
-    def _on_scenario_name_changed(self, name: str) -> None:
-        self._scenario_controller.update_scenario_name(name)
-        self._sync_scenario_ui()
-
     def _on_simulation_settings_changed(self, dt: float, integrator: str) -> None:
         self._scenario_controller.update_simulation_settings(dt, integrator)
         self._sync_scenario_ui()
@@ -448,30 +488,28 @@ class MainWindow(QtWidgets.QMainWindow):
             interval_ms = int(self._simulation.dt * 1000)
             self._timer.start(max(interval_ms, 1))
 
-    def _on_object_selected(self, entity_id: str) -> None:
-        self._selected_entity_id = entity_id
-        self._selected_component_id = None
-        self._update_ui()
+    def _open_scenario_settings(self) -> None:
+        scenario = self._scenario_controller.scenario
+        if scenario is None:
+            return
+        dialog = ScenarioSettingsDialog(
+            scenario.name,
+            scenario.simulation.dt,
+            scenario.simulation.integrator,
+            parent=self,
+        )
+        if dialog.exec() != QtWidgets.QDialog.Accepted:
+            return
+        name, dt, integrator = dialog.values()
+        self._scenario_controller.update_scenario_name(name)
+        self._scenario_controller.update_simulation_settings(dt, integrator)
+        self._sync_scenario_ui()
 
     def _sync_scenario_ui(self) -> None:
         scenario = self._scenario_controller.scenario
         if scenario is None:
             return
-        path = None
-        if self._scenario_controller.scenario_path is not None:
-            path = str(self._scenario_controller.scenario_path)
-        self._scenario_panel.set_scenario(scenario.name, path)
         self._simulation_panel.set_settings(scenario.simulation.dt, scenario.simulation.integrator)
-        objects: list[tuple[str, str]] = []
-        for entity in scenario.entities:
-            if isinstance(entity, RigidBodyDefinition):
-                label = f"Spacecraft: {entity.entity_id}"
-            elif isinstance(entity, PointMassDefinition):
-                label = f"Point Mass: {entity.entity_id}"
-            else:
-                label = str(entity.entity_id)
-            objects.append((entity.entity_id, label))
-        self._scenario_panel.set_objects(objects)
 
     def _update_ui(self) -> None:
         if self._simulation is None:
@@ -494,7 +532,6 @@ class MainWindow(QtWidgets.QMainWindow):
             self._builder_panel.set_selected_component(component_id)
         else:
             self._builder_panel.set_entity(None)
-        self._scenario_panel.set_selected_object(self._selected_entity_id)
 
     def _toggle_play(self, checked: bool) -> None:
         if self._simulation is None:

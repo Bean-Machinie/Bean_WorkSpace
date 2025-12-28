@@ -52,6 +52,8 @@ class SpacecraftEditorPanel(QtWidgets.QWidget):
         self._load_button.clicked.connect(self.mesh_load_requested.emit)
         self._new_craft_button = QtWidgets.QPushButton("Reset Spacecraft")
         self._new_craft_button.clicked.connect(self._emit_reset_spacecraft)
+        for button in (self._load_button, self._new_craft_button):
+            button.setSizePolicy(QtWidgets.QSizePolicy.Minimum, QtWidgets.QSizePolicy.Fixed)
         button_row.addWidget(self._load_button)
         button_row.addWidget(self._new_craft_button)
         button_row.addStretch(1)
@@ -59,8 +61,11 @@ class SpacecraftEditorPanel(QtWidgets.QWidget):
 
         self._model_path = QtWidgets.QLineEdit()
         self._model_path.setReadOnly(True)
+        self._model_path.setMinimumWidth(0)
         self._model_info = QtWidgets.QLabel("-")
         self._model_warning = QtWidgets.QLabel("")
+        self._model_info.setMinimumWidth(0)
+        self._model_warning.setMinimumWidth(0)
         self._model_warning.setStyleSheet("color: #d84315;")
         model_layout.addWidget(self._model_path)
         model_layout.addWidget(self._model_info)
@@ -68,11 +73,17 @@ class SpacecraftEditorPanel(QtWidgets.QWidget):
 
         display_group = QtWidgets.QGroupBox("Display")
         display_layout = QtWidgets.QFormLayout(display_group)
+        display_layout.setFieldGrowthPolicy(QtWidgets.QFormLayout.FieldsStayAtSizeHint)
+        display_layout.setLabelAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
+        display_layout.setHorizontalSpacing(8)
         self._show_mesh = QtWidgets.QCheckBox("Show Mesh")
         self._show_mesh.setChecked(True)
         self._show_mass_points = QtWidgets.QCheckBox("Show Mass Points")
         self._show_mass_points.setChecked(True)
         self._opacity_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+        self._opacity_slider.setSizePolicy(
+            QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed
+        )
         self._opacity_slider.setRange(0, 100)
         self._opacity_slider.setValue(35)
         self._opacity_label = QtWidgets.QLabel("0.35")
@@ -89,7 +100,14 @@ class SpacecraftEditorPanel(QtWidgets.QWidget):
         components_layout = QtWidgets.QVBoxLayout(components_group)
         self._components_table = QtWidgets.QTableWidget(0, 5)
         self._components_table.setHorizontalHeaderLabels(["ID", "Mass", "x", "y", "z"])
-        self._components_table.horizontalHeader().setStretchLastSection(True)
+        header = self._components_table.horizontalHeader()
+        header.setStretchLastSection(False)
+        header.setSectionResizeMode(QtWidgets.QHeaderView.Interactive)
+        self._components_table.horizontalHeader().setMinimumSectionSize(24)
+        self._components_table.setMinimumWidth(0)
+        self._components_table.setSizePolicy(
+            QtWidgets.QSizePolicy.Preferred, QtWidgets.QSizePolicy.Expanding
+        )
         self._components_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
         self._components_table.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
         self._components_table.setEditTriggers(
@@ -99,8 +117,13 @@ class SpacecraftEditorPanel(QtWidgets.QWidget):
         )
         self._components_table.itemChanged.connect(self._emit_components_changed)
         self._components_table.itemSelectionChanged.connect(self._emit_component_selected)
+        self._components_table.setColumnWidth(0, 60)
+        self._components_table.setColumnWidth(1, 80)
+        self._components_table.setColumnWidth(2, 60)
+        self._components_table.setColumnWidth(3, 60)
+        self._components_table.setColumnWidth(4, 60)
 
-        buttons_row = QtWidgets.QHBoxLayout()
+        buttons_row = QtWidgets.QGridLayout()
         self._add_button = QtWidgets.QPushButton("Add")
         self._remove_button = QtWidgets.QPushButton("Remove")
         self._duplicate_button = QtWidgets.QPushButton("Duplicate")
@@ -108,17 +131,25 @@ class SpacecraftEditorPanel(QtWidgets.QWidget):
         self._auto_generate_count = QtWidgets.QSpinBox()
         self._auto_generate_count.setRange(1, 50)
         self._auto_generate_count.setValue(5)
+        self._auto_generate_count.setMinimumWidth(0)
+        for button in (
+            self._add_button,
+            self._remove_button,
+            self._duplicate_button,
+            self._auto_generate_button,
+        ):
+            button.setSizePolicy(QtWidgets.QSizePolicy.Minimum, QtWidgets.QSizePolicy.Fixed)
         self._add_button.clicked.connect(self._add_component)
         self._remove_button.clicked.connect(self._remove_component)
         self._duplicate_button.clicked.connect(self._duplicate_component)
         self._auto_generate_button.clicked.connect(self._emit_auto_generate)
-        buttons_row.addWidget(self._add_button)
-        buttons_row.addWidget(self._remove_button)
-        buttons_row.addWidget(self._duplicate_button)
-        buttons_row.addWidget(self._auto_generate_button)
-        buttons_row.addWidget(QtWidgets.QLabel("Max points"))
-        buttons_row.addWidget(self._auto_generate_count)
-        buttons_row.addStretch(1)
+        buttons_row.addWidget(self._add_button, 0, 0)
+        buttons_row.addWidget(self._remove_button, 0, 1)
+        buttons_row.addWidget(self._duplicate_button, 0, 2)
+        buttons_row.addWidget(self._auto_generate_button, 1, 0, 1, 2)
+        buttons_row.addWidget(QtWidgets.QLabel("Max points"), 1, 2)
+        buttons_row.addWidget(self._auto_generate_count, 1, 3)
+        buttons_row.setColumnStretch(4, 1)
 
         components_layout.addWidget(self._components_table)
         com_note = QtWidgets.QLabel(
@@ -130,9 +161,13 @@ class SpacecraftEditorPanel(QtWidgets.QWidget):
 
         com_group = QtWidgets.QGroupBox("Center of Mass")
         com_layout = QtWidgets.QFormLayout(com_group)
+        com_layout.setFieldGrowthPolicy(QtWidgets.QFormLayout.FieldsStayAtSizeHint)
+        com_layout.setLabelAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
+        com_layout.setHorizontalSpacing(8)
         self._com_body_label = QtWidgets.QLabel("-")
         self._com_world_label = QtWidgets.QLabel("-")
         self._recenter_button = QtWidgets.QPushButton("Recenter components to CoM")
+        self._recenter_button.setSizePolicy(QtWidgets.QSizePolicy.Minimum, QtWidgets.QSizePolicy.Fixed)
         self._recenter_button.clicked.connect(self._emit_recenter_requested)
         com_layout.addRow("Body frame (r_C)", self._com_body_label)
         com_layout.addRow("World frame", self._com_world_label)
@@ -140,6 +175,9 @@ class SpacecraftEditorPanel(QtWidgets.QWidget):
 
         state_group = QtWidgets.QGroupBox("Initial State (World Frame)")
         state_layout = QtWidgets.QFormLayout(state_group)
+        state_layout.setFieldGrowthPolicy(QtWidgets.QFormLayout.FieldsStayAtSizeHint)
+        state_layout.setLabelAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
+        state_layout.setHorizontalSpacing(8)
         self._state_pos_x = self._make_spin()
         self._state_pos_y = self._make_spin()
         self._state_pos_z = self._make_spin()
@@ -154,6 +192,7 @@ class SpacecraftEditorPanel(QtWidgets.QWidget):
         self._state_omega_y = self._make_spin()
         self._state_omega_z = self._make_spin()
         self._state_reset_button = QtWidgets.QPushButton("Reset to defaults")
+        self._state_reset_button.setSizePolicy(QtWidgets.QSizePolicy.Minimum, QtWidgets.QSizePolicy.Fixed)
         self._state_reset_button.clicked.connect(self._reset_state_defaults)
 
         state_layout.addRow("CoM X", self._state_pos_x)
@@ -470,6 +509,7 @@ class SpacecraftEditorPanel(QtWidgets.QWidget):
         spin = QtWidgets.QDoubleSpinBox()
         spin.setRange(-1e9, 1e9)
         spin.setDecimals(6)
+        spin.setMinimumWidth(0)
         return spin
 
     def _populate_state_fields(self, entity: RigidBody) -> None:
