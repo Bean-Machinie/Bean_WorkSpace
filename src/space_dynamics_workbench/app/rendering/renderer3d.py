@@ -56,15 +56,22 @@ class _PickingGLViewWidget(gl.GLViewWidget):
         release_pos = ev.position() if hasattr(ev, "position") else ev.localPos()
         if self._press_pos is not None and ev.button() == QtCore.Qt.MouseButton.LeftButton:
             if (release_pos - self._press_pos).manhattanLength() < 4.0:
-                self._on_click(release_pos)
+                handled = bool(self._on_click(release_pos))
+                if handled:
+                    self._press_pos = None
+                    ev.accept()
+                    return
         self._press_pos = None
         super().mouseReleaseEvent(ev)
 
 
 class _OrientationWidget(QtWidgets.QFrame):
-    def __init__(self, on_select, parent=None) -> None:
+    def __init__(self, on_select, on_orbit, parent=None) -> None:
         super().__init__(parent=parent)
         self._on_select = on_select
+        self._on_orbit = on_orbit
+        self._dragging = False
+        self._last_pos: QtCore.QPoint | None = None
         self.setObjectName("orientationWidget")
         self.setStyleSheet(
             "#orientationWidget {"
@@ -107,6 +114,37 @@ class _OrientationWidget(QtWidgets.QFrame):
             button.setObjectName(obj_name)
             button.clicked.connect(lambda _checked=False, k=key: self._on_select(k))
             layout.addWidget(button, idx // 2, idx % 2)
+
+    def mousePressEvent(self, event: QtGui.QMouseEvent) -> None:
+        if event.button() == QtCore.Qt.MouseButton.LeftButton and self._can_orbit(event.pos()):
+            self._dragging = True
+            self._last_pos = event.pos()
+            self.setCursor(QtCore.Qt.ClosedHandCursor)
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event: QtGui.QMouseEvent) -> None:
+        if self._dragging and self._last_pos is not None:
+            delta = event.pos() - self._last_pos
+            self._last_pos = event.pos()
+            self._on_orbit(delta.x(), delta.y())
+            event.accept()
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event: QtGui.QMouseEvent) -> None:
+        if self._dragging and event.button() == QtCore.Qt.MouseButton.LeftButton:
+            self._dragging = False
+            self._last_pos = None
+            self.setCursor(QtCore.Qt.ArrowCursor)
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
+    def _can_orbit(self, pos: QtCore.QPoint) -> bool:
+        child = self.childAt(pos)
+        return child is None
 
 
 class Renderer3D(Renderer):
@@ -153,7 +191,7 @@ class Renderer3D(Renderer):
         for label in self._axis_labels:
             self._view.addItem(label)
 
-        self._orientation_widget = _OrientationWidget(self.set_orientation, self._view)
+        self._orientation_widget = _OrientationWidget(self.set_orientation, self._orbit_from_gizmo, self._view)
         self._orientation_margin = 12
         self._position_overlay()
 
@@ -199,6 +237,13 @@ class Renderer3D(Renderer):
             pxMode=True,
             glOptions="opaque",
         )
+        self._rb_com_item = gl.GLScatterPlotItem(
+            pos=np.zeros((0, 3)),
+            color=(1.0, 0.55, 0.2, 0.9),
+            size=9.0,
+            pxMode=True,
+            glOptions="opaque",
+        )
 
         self._r_op_item = gl.GLLinePlotItem(
             pos=np.zeros((0, 3)),
@@ -228,6 +273,7 @@ class Renderer3D(Renderer):
         self._view.addItem(self._points_item)
         self._view.addItem(self._origin_item)
         self._view.addItem(self._com_item)
+        self._view.addItem(self._rb_com_item)
         self._view.addItem(self._r_op_item)
         self._view.addItem(self._r_cp_item)
         self._view.addItem(self._r_oc_item)
@@ -236,6 +282,8 @@ class Renderer3D(Renderer):
         self._positions: np.ndarray = np.zeros((0, 3), dtype=float)
         self._last_com: np.ndarray = np.zeros(3, dtype=float)
         self._viewport_size: tuple[int, int] = (1, 1)
+        self._rb_com_ids: List[str] = []
+        self._rb_com_positions: np.ndarray = np.zeros((0, 3), dtype=float)
         self._mesh_items: dict[str, gl.GLMeshItem] = {}
         self._mesh_sources: dict[str, str] = {}
         self._project_root = Path.cwd()
@@ -259,6 +307,8 @@ class Renderer3D(Renderer):
         self._drag_screen_dir = np.zeros(2, dtype=float)
         self._drag_scale = 0.01
         self._rotate_scale_deg = 0.35
+        self._drag_center_screen: QtCore.QPointF | None = None
+        self._drag_prev_vec = np.zeros(2, dtype=float)
 
         self._gizmo_x = self._make_gizmo_line((1.0, 0.2, 0.2, 1.0))
         self._gizmo_y = self._make_gizmo_line((0.2, 0.85, 0.2, 1.0))
@@ -328,6 +378,7 @@ class Renderer3D(Renderer):
         origin_pos = self._to_3d(frame_vectors.origin)
         self._origin_item.setData(pos=origin_pos.reshape(1, 3))
         self._com_item.setData(pos=self._last_com.reshape(1, 3))
+        self._update_rigid_body_coms()
 
         self._set_vector_item(self._r_op_item, frame_vectors.r_op_segments, overlays.show_r_op)
         self._set_vector_item(self._r_cp_item, frame_vectors.r_cp_segments, overlays.show_r_cp)
@@ -487,25 +538,22 @@ class Renderer3D(Renderer):
         self._gizmo_target_id = target_id
         if target_id is None or self._interaction_mode == "select":
             self._set_gizmo_visibility(False, False)
+            self._rb_com_item.setVisible(False)
             return
         center = self._target_world_position(target_id)
         if center is None:
             self._set_gizmo_visibility(False, False)
+            self._rb_com_item.setVisible(False)
             return
         self._gizmo_pos = center
         axis_len = self._gizmo_axis_len
         center_vec = center.astype(np.float32, copy=False)
         if self._interaction_mode == "move":
-            self._gizmo_x.setData(
-                pos=np.asarray([center_vec, center_vec + np.array([axis_len, 0.0, 0.0], dtype=np.float32)])
-            )
-            self._gizmo_y.setData(
-                pos=np.asarray([center_vec, center_vec + np.array([0.0, axis_len, 0.0], dtype=np.float32)])
-            )
-            self._gizmo_z.setData(
-                pos=np.asarray([center_vec, center_vec + np.array([0.0, 0.0, axis_len], dtype=np.float32)])
-            )
+            self._gizmo_x.setData(pos=self._axis_line_with_arrow(center_vec, np.array([1.0, 0.0, 0.0])))
+            self._gizmo_y.setData(pos=self._axis_line_with_arrow(center_vec, np.array([0.0, 1.0, 0.0])))
+            self._gizmo_z.setData(pos=self._axis_line_with_arrow(center_vec, np.array([0.0, 0.0, 1.0])))
             self._set_gizmo_visibility(True, False)
+            self._rb_com_item.setVisible(True)
             return
         if self._interaction_mode == "rotate":
             ring = self._gizmo_ring_radius
@@ -519,6 +567,7 @@ class Renderer3D(Renderer):
             self._gizmo_ry.setData(pos=(ring_y + center_vec))
             self._gizmo_rz.setData(pos=(ring_z + center_vec))
             self._set_gizmo_visibility(False, True)
+            self._rb_com_item.setVisible(False)
 
     def _set_gizmo_visibility(self, axes: bool, rings: bool) -> None:
         self._gizmo_x.setVisible(axes)
@@ -527,6 +576,22 @@ class Renderer3D(Renderer):
         self._gizmo_rx.setVisible(rings)
         self._gizmo_ry.setVisible(rings)
         self._gizmo_rz.setVisible(rings)
+
+    def _axis_line_with_arrow(self, center: np.ndarray, axis_dir: np.ndarray) -> np.ndarray:
+        axis = np.asarray(axis_dir, dtype=float)
+        axis = axis / max(np.linalg.norm(axis), 1e-9)
+        end = center + axis * self._gizmo_axis_len
+        head_len = 0.45
+        head_width = 0.22
+        up = np.array([0.0, 0.0, 1.0], dtype=float)
+        if abs(float(np.dot(axis, up))) > 0.9:
+            up = np.array([0.0, 1.0, 0.0], dtype=float)
+        side = np.cross(axis, up)
+        side = side / max(np.linalg.norm(side), 1e-9)
+        left = end - axis * head_len + side * head_width
+        right = end - axis * head_len - side * head_width
+        points = np.vstack([center, end, end, left, end, right]).astype(np.float32)
+        return points
 
     def _resolve_gizmo_target(self) -> str | None:
         if self._selected_entity_id is None:
@@ -563,6 +628,10 @@ class Renderer3D(Renderer):
             axis = self._pick_gizmo_axis(view_pos)
             if axis is not None:
                 return self._start_drag(axis, view_pos)
+            com_pick = self._pick_rigid_body_com(view_pos)
+            if com_pick is not None:
+                self.entity_selected.emit(com_pick)
+                return True
         if self._interaction_mode == "rotate":
             axis = self._pick_gizmo_ring(view_pos)
             if axis is not None:
@@ -588,12 +657,35 @@ class Renderer3D(Renderer):
             delta_world = self._drag_axis_dir * (delta_pixels * self._drag_scale)
             self.transform_requested.emit(self._drag_target_id, "move", delta_world)
         elif self._interaction_mode == "rotate":
-            angle_deg = delta.x() * self._rotate_scale_deg
-            self.transform_requested.emit(
-                self._drag_target_id,
-                "rotate",
-                {"axis": self._drag_axis_dir.copy(), "angle_deg": float(angle_deg)},
-            )
+            if self._drag_center_screen is None:
+                angle_deg = delta.x() * self._rotate_scale_deg
+            else:
+                curr_vec = np.array(
+                    [
+                        view_pos.x() - self._drag_center_screen.x(),
+                        view_pos.y() - self._drag_center_screen.y(),
+                    ],
+                    dtype=float,
+                )
+                if np.hypot(curr_vec[0], curr_vec[1]) <= 1e-6 or np.hypot(
+                    self._drag_prev_vec[0], self._drag_prev_vec[1]
+                ) <= 1e-6:
+                    angle_deg = 0.0
+                else:
+                    prev_norm = self._drag_prev_vec / np.hypot(
+                        self._drag_prev_vec[0], self._drag_prev_vec[1]
+                    )
+                    curr_norm = curr_vec / np.hypot(curr_vec[0], curr_vec[1])
+                    cross = prev_norm[0] * curr_norm[1] - prev_norm[1] * curr_norm[0]
+                    dot = prev_norm[0] * curr_norm[0] + prev_norm[1] * curr_norm[1]
+                    angle_deg = float(np.degrees(np.arctan2(cross, dot)))
+                    self._drag_prev_vec = curr_vec
+            if abs(angle_deg) > 1e-6:
+                self.transform_requested.emit(
+                    self._drag_target_id,
+                    "rotate",
+                    {"axis": self._drag_axis_dir.copy(), "angle_deg": float(angle_deg)},
+                )
         self._drag_last_pos = view_pos
         return True
 
@@ -617,6 +709,17 @@ class Renderer3D(Renderer):
         self._drag_axis = axis
         self._drag_target_id = self._gizmo_target_id
         self._drag_last_pos = view_pos
+        self._drag_center_screen = self._screen_for_world(self._gizmo_pos)
+        if self._drag_center_screen is not None:
+            vec = np.array(
+                [
+                    view_pos.x() - self._drag_center_screen.x(),
+                    view_pos.y() - self._drag_center_screen.y(),
+                ],
+                dtype=float,
+            )
+            if np.hypot(vec[0], vec[1]) > 1e-6:
+                self._drag_prev_vec = vec
         self._drag_axis_dir = axis_dir
         if self._interaction_mode == "move":
             center = self._screen_for_world(self._gizmo_pos)
@@ -640,6 +743,7 @@ class Renderer3D(Renderer):
         self._drag_axis = None
         self._drag_target_id = None
         self._drag_last_pos = None
+        self._drag_center_screen = None
 
     def _pick_gizmo_axis(self, view_pos: QtCore.QPointF) -> str | None:
         if self._gizmo_target_id is None:
@@ -647,7 +751,7 @@ class Renderer3D(Renderer):
         center = self._screen_for_world(self._gizmo_pos)
         if center is None:
             return None
-        threshold = 8.0
+        threshold = 12.0
         best_axis = None
         best_dist = float("inf")
         for axis, axis_dir in (
@@ -659,6 +763,12 @@ class Renderer3D(Renderer):
             if end is None:
                 continue
             dist = self._distance_to_segment(view_pos, center, end)
+            screen_len = float(np.hypot(end.x() - center.x(), end.y() - center.y()))
+            dynamic_threshold = max(threshold, screen_len * 0.8)
+            if dist <= dynamic_threshold and dist < best_dist:
+                best_dist = dist
+                best_axis = axis
+                continue
             if dist < best_dist:
                 best_dist = dist
                 best_axis = axis
@@ -693,6 +803,26 @@ class Renderer3D(Renderer):
                 best_axis = axis
         if best_dist <= threshold:
             return best_axis
+        return None
+
+    def _pick_rigid_body_com(self, view_pos: QtCore.QPointF) -> str | None:
+        if self._rb_com_positions.size == 0:
+            return None
+        viewport = (0, 0, self._viewport_size[0], self._viewport_size[1])
+        projection = self._view.projectionMatrix(viewport, viewport)
+        modelview = self._view.viewMatrix()
+        min_distance = float("inf")
+        picked_id: str | None = None
+        for idx, pos in enumerate(self._rb_com_positions):
+            screen_pos = self._project_point(pos, modelview, projection, viewport)
+            if screen_pos is None:
+                continue
+            dist = np.hypot(screen_pos.x() - view_pos.x(), screen_pos.y() - view_pos.y())
+            if dist < min_distance:
+                min_distance = dist
+                picked_id = self._rb_com_ids[idx]
+        if min_distance <= self.PICK_RADIUS_PX:
+            return picked_id
         return None
 
     def _build_ring_points(self, axis: str) -> np.ndarray:
@@ -769,6 +899,17 @@ class Renderer3D(Renderer):
             "-z": (0.0, -90.0),
         }
         return mapping.get(key, (0.0, 0.0))
+
+    def _orbit_from_gizmo(self, dx: float, dy: float) -> None:
+        azimuth = float(self._view.opts.get("azimuth", 0.0))
+        elevation = float(self._view.opts.get("elevation", 0.0))
+        azimuth += dx * 0.6
+        elevation -= dy * 0.6
+        elevation = max(-89.0, min(89.0, elevation))
+        center_vec = self._last_com if self._last_com.size == 3 else np.zeros(3, dtype=float)
+        center = QtGui.QVector3D(float(center_vec[0]), float(center_vec[1]), float(center_vec[2]))
+        distance = float(self._view.opts.get("distance", 20.0))
+        self._view.setCameraPosition(pos=center, distance=distance, azimuth=azimuth, elevation=elevation)
 
     def _animate_to_orientation(
         self, center: QtGui.QVector3D, distance: float, azimuth: float, elevation: float
@@ -898,6 +1039,19 @@ class Renderer3D(Renderer):
                 self._mesh_sources.pop(entity_id, None)
                 self._view.removeItem(mesh_item)
 
+    def _update_rigid_body_coms(self) -> None:
+        self._rb_com_ids = []
+        positions = []
+        for entity in self._entities:
+            if isinstance(entity, RigidBody):
+                self._rb_com_ids.append(entity.entity_id)
+                positions.append(self._to_3d(entity.com_position))
+        if positions:
+            self._rb_com_positions = np.stack(positions).astype(np.float32, copy=False)
+        else:
+            self._rb_com_positions = np.zeros((0, 3), dtype=np.float32)
+        self._rb_com_item.setData(pos=self._rb_com_positions)
+
     def _resolve_mesh_path(self, mesh: MeshMetadata) -> Path | None:
         mesh_path = Path(mesh.path)
         if not mesh_path.is_absolute():
@@ -928,10 +1082,12 @@ class Renderer3D(Renderer):
             dtype=float,
         )
 
-    def _handle_click(self, view_pos: QtCore.QPointF) -> None:
+    def _handle_click(self, view_pos: QtCore.QPointF) -> bool:
         picked = self._pick_entity(view_pos)
         if picked is not None:
             self.entity_selected.emit(picked)
+            return True
+        return False
 
     def _pick_entity(self, view_pos: QtCore.QPointF) -> str | None:
         if self._positions.size == 0:
