@@ -1028,14 +1028,18 @@ class Renderer3D(Renderer):
             if self._mesh_sources.get(entity.entity_id) != mesh_key:
                 self._mesh_sources[entity.entity_id] = mesh_key
             vertices_world = self._transform_mesh_vertices(mesh_data.vertices, entity, entity.mesh)
-            vertex_colors = self._normalize_vertex_colors(mesh_data.vertex_colors, float(display.mesh_opacity))
+            use_model_colors = getattr(display, "mesh_color_mode", "gray") == "model"
+            vertex_colors = None
+            if use_model_colors:
+                vertex_colors = self._normalize_vertex_colors(mesh_data.vertex_colors, 1.0)
             if vertex_colors is not None:
                 mesh_item.setMeshData(
                     meshdata=gl.MeshData(vertexes=vertices_world, faces=mesh_data.faces, vertexColors=vertex_colors)
                 )
             else:
                 mesh_item.setMeshData(meshdata=gl.MeshData(vertexes=vertices_world, faces=mesh_data.faces))
-                color = (*self.MESH_BASE_COLOR[:3], float(display.mesh_opacity))
+                opacity = float(display.mesh_opacity) if not use_model_colors else 1.0
+                color = (*self.MESH_BASE_COLOR[:3], opacity)
                 mesh_item.setColor(color)
             mesh_item.setVisible(True)
 

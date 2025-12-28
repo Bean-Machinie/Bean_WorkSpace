@@ -80,6 +80,9 @@ class SpacecraftEditorPanel(QtWidgets.QWidget):
         self._show_mesh.setChecked(True)
         self._show_mass_points = QtWidgets.QCheckBox("Show Mass Points")
         self._show_mass_points.setChecked(True)
+        self._mesh_color_mode = QtWidgets.QComboBox()
+        self._mesh_color_mode.addItem("Solid Gray", "gray")
+        self._mesh_color_mode.addItem("Model Colors", "model")
         self._opacity_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
         self._opacity_slider.setSizePolicy(
             QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed
@@ -89,11 +92,13 @@ class SpacecraftEditorPanel(QtWidgets.QWidget):
         self._opacity_label = QtWidgets.QLabel("0.35")
         display_layout.addRow(self._show_mesh)
         display_layout.addRow(self._show_mass_points)
+        display_layout.addRow("Mesh Color", self._mesh_color_mode)
         display_layout.addRow("Mesh Opacity", self._opacity_slider)
         display_layout.addRow("", self._opacity_label)
 
         self._show_mesh.toggled.connect(self._emit_display_options)
         self._show_mass_points.toggled.connect(self._emit_display_options)
+        self._mesh_color_mode.currentIndexChanged.connect(self._emit_display_options)
         self._opacity_slider.valueChanged.connect(self._emit_display_options)
 
         components_group = QtWidgets.QGroupBox("Mass Components")
@@ -308,11 +313,13 @@ class SpacecraftEditorPanel(QtWidgets.QWidget):
             show_mesh=self._show_mesh.isChecked(),
             show_mass_points=self._show_mass_points.isChecked(),
             mesh_opacity=float(self._opacity_slider.value() / 100.0),
+            mesh_color_mode=str(self._mesh_color_mode.currentData()),
         )
 
     def _emit_display_options(self) -> None:
         value = self._opacity_slider.value() / 100.0
         self._opacity_label.setText(f"{value:.2f}")
+        self._opacity_slider.setEnabled(self._mesh_color_mode.currentData() == "gray")
         self.display_options_changed.emit(self.display_options())
 
     def _emit_components_changed(self, _: QtWidgets.QTableWidgetItem | None) -> None:

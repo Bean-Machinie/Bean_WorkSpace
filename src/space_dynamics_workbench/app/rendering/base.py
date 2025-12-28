@@ -22,6 +22,7 @@ class DisplayOptions:
     show_mass_points: bool = True
     show_mesh: bool = True
     mesh_opacity: float = 0.35
+    mesh_color_mode: str = "gray"
 
 
 class Renderer(QtWidgets.QWidget):

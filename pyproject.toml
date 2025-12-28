@@ -17,7 +17,7 @@ dependencies = [
 [project.optional-dependencies]
 dev = ["pytest"]
 gl = ["PyOpenGL"]
-mesh = ["trimesh"]
+mesh = ["trimesh", "pillow"]
 
 [project.scripts]
 space-dynamics-workbench = "space_dynamics_workbench.app.main:main"
