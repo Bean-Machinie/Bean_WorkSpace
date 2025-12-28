@@ -9,12 +9,21 @@ from PySide6 import QtCore, QtGui, QtWidgets
 from ..core.model import MeshMetadata, PointMass, RigidBody, RigidBodyComponent, resolve_entity_by_id
 from ..core.physics import FrameChoice, compute_frame_vectors, from_frame
 from ..core.scenarios import load_builtin_scenarios, scenario_registry
+from ..core.scenario_definition import PointMassDefinition, RigidBodyDefinition
 from ..core.sim import Simulation, SymplecticEulerIntegrator
 from ..io.scene_format import SceneData, capture_scene, clone_scene, deserialize_scene, serialize_scene
-from .mesh_generation import generate_mass_points_from_mesh, generate_mass_points_from_vertices
+from .scenario_controller import ScenarioController
+from .mesh_generation import generate_mass_points_from_mesh
 from .mesh_loading import load_mesh_data, mesh_loading_available, mesh_loading_error
 from .rendering import DisplayOptions, OverlayOptions, Renderer2D, Renderer3D, renderer3d_available, renderer3d_error
-from .widgets import InspectorPanel, InvariantsPanel, SpacecraftBuilderPanel
+from .widgets import (
+    InspectorPanel,
+    InvariantsPanel,
+    NewScenarioDialog,
+    ScenarioPanel,
+    SimulationPanel,
+    SpacecraftEditorPanel,
+)
 from .widgets.spacecraft_builder import MeshInfo
 
 
@@ -34,13 +43,29 @@ class MainWindow(QtWidgets.QMainWindow):
         self._renderer_stack.addWidget(self._renderer_2d)
         self.setCentralWidget(self._renderer_stack)
 
-        self._builder_panel = SpacecraftBuilderPanel()
-        self._builder_dock = QtWidgets.QDockWidget("Spacecraft Builder", self)
+        self._builder_panel = SpacecraftEditorPanel()
+        self._builder_dock = QtWidgets.QDockWidget("Spacecraft Editor", self)
         self._builder_dock.setWidget(self._builder_panel)
         self._builder_dock.setAllowedAreas(
             QtCore.Qt.LeftDockWidgetArea | QtCore.Qt.RightDockWidgetArea
         )
         self.addDockWidget(QtCore.Qt.RightDockWidgetArea, self._builder_dock)
+
+        self._scenario_panel = ScenarioPanel()
+        self._scenario_dock = QtWidgets.QDockWidget("Scenario", self)
+        self._scenario_dock.setWidget(self._scenario_panel)
+        self._scenario_dock.setAllowedAreas(
+            QtCore.Qt.LeftDockWidgetArea | QtCore.Qt.RightDockWidgetArea
+        )
+        self.addDockWidget(QtCore.Qt.LeftDockWidgetArea, self._scenario_dock)
+
+        self._simulation_panel = SimulationPanel()
+        self._simulation_dock = QtWidgets.QDockWidget("Simulation", self)
+        self._simulation_dock.setWidget(self._simulation_panel)
+        self._simulation_dock.setAllowedAreas(
+            QtCore.Qt.LeftDockWidgetArea | QtCore.Qt.RightDockWidgetArea
+        )
+        self.addDockWidget(QtCore.Qt.LeftDockWidgetArea, self._simulation_dock)
 
         self._inspector = InspectorPanel()
         self._inspector.setTitle("")
@@ -63,6 +88,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self._timer = QtCore.QTimer(self)
         self._timer.timeout.connect(self._on_tick)
 
+        self._scenario_controller = ScenarioController()
+
         self._play_action = QtGui.QAction("Play", self)
         self._play_action.setCheckable(True)
         self._play_action.triggered.connect(self._toggle_play)
@@ -84,7 +111,32 @@ class MainWindow(QtWidgets.QMainWindow):
 
         menu_bar = self.menuBar()
         file_menu = menu_bar.addMenu("File")
-        self._scenario_menu = file_menu.addMenu("Scenario")
+
+        self._new_scenario_action = QtGui.QAction("New Scenario...", self)
+        self._new_scenario_action.triggered.connect(self._new_scenario)
+        self._open_scenario_action = QtGui.QAction("Open Scenario...", self)
+        self._open_scenario_action.triggered.connect(self._open_scenario)
+        self._save_scenario_action = QtGui.QAction("Save Scenario", self)
+        self._save_scenario_action.triggered.connect(self._save_scenario)
+        self._save_scenario_as_action = QtGui.QAction("Save Scenario As...", self)
+        self._save_scenario_as_action.triggered.connect(self._save_scenario_as)
+
+        file_menu.addAction(self._new_scenario_action)
+        file_menu.addAction(self._open_scenario_action)
+        file_menu.addSeparator()
+        file_menu.addAction(self._save_scenario_action)
+        file_menu.addAction(self._save_scenario_as_action)
+        file_menu.addSeparator()
+        file_menu.addAction(self._save_action)
+        file_menu.addAction(self._load_action)
+
+        scenario_menu = menu_bar.addMenu("Scenario")
+        self._add_spacecraft_action = QtGui.QAction("Add Spacecraft...", self)
+        self._add_spacecraft_action.triggered.connect(self._on_add_spacecraft_requested)
+        scenario_menu.addAction(self._add_spacecraft_action)
+
+        scenario_menu.addSeparator()
+        self._builtin_scenario_menu = scenario_menu.addMenu("Built-in Scenarios")
         self._scenario_group = QtGui.QActionGroup(self)
         self._scenario_group.setExclusive(True)
         self._scenario_actions: dict[str, QtGui.QAction] = {}
@@ -94,11 +146,8 @@ class MainWindow(QtWidgets.QMainWindow):
             action.setData(scenario.scenario_id)
             action.triggered.connect(self._on_scenario_action)
             self._scenario_group.addAction(action)
-            self._scenario_menu.addAction(action)
+            self._builtin_scenario_menu.addAction(action)
             self._scenario_actions[scenario.scenario_id] = action
-        file_menu.addSeparator()
-        file_menu.addAction(self._save_action)
-        file_menu.addAction(self._load_action)
 
         edit_menu = menu_bar.addMenu("Edit")
         edit_menu.addAction(self._play_action)
@@ -262,16 +311,18 @@ class MainWindow(QtWidgets.QMainWindow):
         self._inspector.rigid_component_selected.connect(self._on_rigid_component_selected)
         self._builder_panel.mesh_load_requested.connect(self._on_mesh_load_requested)
         self._builder_panel.display_options_changed.connect(self._on_display_options_changed)
-        self._builder_panel.components_updated.connect(self._on_components_updated)
+        self._builder_panel.components_changed.connect(self._on_components_updated)
         self._builder_panel.component_selected.connect(self._on_builder_component_selected)
         self._builder_panel.recenter_requested.connect(self._on_recenter_requested)
-        self._builder_panel.state_updated.connect(self._on_state_updated)
-        self._builder_panel.create_blank_requested.connect(self._on_create_blank_requested)
+        self._builder_panel.initial_state_changed.connect(self._on_state_updated)
+        self._builder_panel.reset_spacecraft_requested.connect(self._on_reset_spacecraft_requested)
         self._builder_panel.auto_generate_requested.connect(self._on_auto_generate_requested)
+        self._scenario_panel.add_spacecraft_requested.connect(self._on_add_spacecraft_requested)
+        self._scenario_panel.name_changed.connect(self._on_scenario_name_changed)
+        self._scenario_panel.object_selected.connect(self._on_object_selected)
+        self._simulation_panel.settings_changed.connect(self._on_simulation_settings_changed)
 
         self._simulation: Simulation | None = None
-        self._scenario_id: str | None = None
-        self._initial_scene: SceneData | None = None
         self._selected_entity_id: Optional[str] = None
         self._selected_component_id: Optional[str] = None
         self._frame_choice: FrameChoice = FrameChoice.WORLD
@@ -299,10 +350,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._on_renderer_changed(default_renderer, warn=False)
         self._interaction_toolbar.setVisible(Renderer3D is not None and isinstance(self._renderer, Renderer3D))
 
-        scenario_ids = [scenario.scenario_id for scenario in scenario_registry.all()]
-        if scenario_ids:
-            self._select_scenario_in_menu(scenario_ids[0])
-            self._set_scenario(scenario_ids[0])
+        self._new_scenario_from_defaults()
 
     def _on_scenario_action(self) -> None:
         action = self.sender()
@@ -311,24 +359,119 @@ class MainWindow(QtWidgets.QMainWindow):
         scenario_id = action.data()
         if scenario_id is None:
             return
-        self._set_scenario(str(scenario_id))
-
-    def _set_scenario(self, scenario_id: str) -> None:
-        scenario = scenario_registry.get(scenario_id)
+        scenario = scenario_registry.get(str(scenario_id))
         sim = scenario.create_simulation()
-        self._set_simulation(sim, scenario_id)
+        self._scenario_controller.load_from_simulation(scenario.name, sim)
+        self._set_simulation(self._scenario_controller.simulation)
+        self._sync_scenario_ui()
         defaults = scenario.ui_defaults()
         if defaults and defaults.view_range:
             self._renderer.set_view_range(defaults.view_range)
         self._frame_scene_if_needed()
 
-    def _set_simulation(self, sim: Simulation, scenario_id: str | None) -> None:
+    def _set_simulation(self, sim: Simulation | None) -> None:
+        if sim is None:
+            return
+        if self._timer.isActive():
+            self._timer.stop()
+            self._play_action.setChecked(False)
+            self._play_action.setText("Play")
         self._simulation = sim
-        self._scenario_id = scenario_id
         self._selected_entity_id = None
         self._selected_component_id = None
-        self._initial_scene = capture_scene(sim.entities, scenario_id=scenario_id)
         self._update_ui()
+
+    def _new_scenario_from_defaults(self) -> None:
+        self._scenario_controller.new_scenario("Untitled Scenario")
+        self._set_simulation(self._scenario_controller.simulation)
+        self._sync_scenario_ui()
+        self._select_scenario_in_menu(None)
+
+    def _new_scenario(self) -> None:
+        dialog = NewScenarioDialog(self)
+        if dialog.exec() != QtWidgets.QDialog.Accepted:
+            return
+        name, dt, integrator = dialog.values()
+        self._scenario_controller.new_scenario(name, dt, integrator)
+        self._set_simulation(self._scenario_controller.simulation)
+        self._sync_scenario_ui()
+        self._select_scenario_in_menu(None)
+
+    def _open_scenario(self) -> None:
+        file_path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self,
+            "Open Scenario",
+            "",
+            "Scenario Files (*.json);;All Files (*)",
+        )
+        if not file_path:
+            return
+        self._scenario_controller.load_scenario(Path(file_path))
+        self._set_simulation(self._scenario_controller.simulation)
+        self._sync_scenario_ui()
+        self._select_scenario_in_menu(None)
+
+    def _save_scenario(self) -> None:
+        try:
+            self._scenario_controller.save_scenario()
+        except RuntimeError:
+            self._save_scenario_as()
+        self._sync_scenario_ui()
+
+    def _save_scenario_as(self) -> None:
+        file_path, _ = QtWidgets.QFileDialog.getSaveFileName(
+            self,
+            "Save Scenario As",
+            "scenario.json",
+            "Scenario Files (*.json);;All Files (*)",
+        )
+        if not file_path:
+            return
+        self._scenario_controller.save_scenario(Path(file_path))
+        self._sync_scenario_ui()
+
+    def _on_add_spacecraft_requested(self) -> None:
+        body_def = self._scenario_controller.add_spacecraft()
+        self._selected_entity_id = body_def.entity_id
+        self._selected_component_id = None
+        self._sync_scenario_ui()
+        self._update_ui()
+
+    def _on_scenario_name_changed(self, name: str) -> None:
+        self._scenario_controller.update_scenario_name(name)
+        self._sync_scenario_ui()
+
+    def _on_simulation_settings_changed(self, dt: float, integrator: str) -> None:
+        self._scenario_controller.update_simulation_settings(dt, integrator)
+        self._sync_scenario_ui()
+        if self._timer.isActive() and self._simulation is not None:
+            interval_ms = int(self._simulation.dt * 1000)
+            self._timer.start(max(interval_ms, 1))
+
+    def _on_object_selected(self, entity_id: str) -> None:
+        self._selected_entity_id = entity_id
+        self._selected_component_id = None
+        self._update_ui()
+
+    def _sync_scenario_ui(self) -> None:
+        scenario = self._scenario_controller.scenario
+        if scenario is None:
+            return
+        path = None
+        if self._scenario_controller.scenario_path is not None:
+            path = str(self._scenario_controller.scenario_path)
+        self._scenario_panel.set_scenario(scenario.name, path)
+        self._simulation_panel.set_settings(scenario.simulation.dt, scenario.simulation.integrator)
+        objects: list[tuple[str, str]] = []
+        for entity in scenario.entities:
+            if isinstance(entity, RigidBodyDefinition):
+                label = f"Spacecraft: {entity.entity_id}"
+            elif isinstance(entity, PointMassDefinition):
+                label = f"Point Mass: {entity.entity_id}"
+            else:
+                label = str(entity.entity_id)
+            objects.append((entity.entity_id, label))
+        self._scenario_panel.set_objects(objects)
 
     def _update_ui(self) -> None:
         if self._simulation is None:
@@ -351,6 +494,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self._builder_panel.set_selected_component(component_id)
         else:
             self._builder_panel.set_entity(None)
+        self._scenario_panel.set_selected_object(self._selected_entity_id)
 
     def _toggle_play(self, checked: bool) -> None:
         if self._simulation is None:
@@ -397,6 +541,12 @@ class MainWindow(QtWidgets.QMainWindow):
         position_frame = np.zeros(dimension, dtype=float)
         position_frame[:2] = new_position[:2]
         entity.position = from_frame(position_frame, self._frame_choice, self._frame_vectors.r_oc_world)
+        self._scenario_controller.update_point_mass(
+            entity.entity_id,
+            entity.mass,
+            entity.position,
+            entity.velocity,
+        )
         self._update_ui()
 
     def _on_point_mass_updated(
@@ -409,7 +559,6 @@ class MainWindow(QtWidgets.QMainWindow):
         entity, _ = self._resolve_entity(entity_id)
         if entity is None or not isinstance(entity, PointMass):
             return
-        entity.mass = mass
         position_frame = np.array(position, dtype=float)
         if self._frame_vectors is not None:
             position_vec = np.zeros(self._frame_vectors.dimension, dtype=float)
@@ -417,8 +566,12 @@ class MainWindow(QtWidgets.QMainWindow):
             position_world = from_frame(position_vec, self._frame_choice, self._frame_vectors.r_oc_world)
         else:
             position_world = position_frame
-        entity.position = position_world
-        entity.velocity = np.array(velocity, dtype=float)
+        self._scenario_controller.update_point_mass(
+            entity_id,
+            mass,
+            position_world,
+            np.array(velocity, dtype=float),
+        )
         self._update_ui()
 
     def _on_rigid_body_updated(
@@ -431,9 +584,14 @@ class MainWindow(QtWidgets.QMainWindow):
         entity, _ = self._resolve_entity(entity_id)
         if entity is None or not isinstance(entity, RigidBody):
             return
-        entity.com_position = np.array(com_position, dtype=float)
-        entity.com_velocity = np.array(com_velocity, dtype=float)
-        entity.omega_world = np.array(omega_world, dtype=float)
+        orientation = tuple(float(value) for value in entity.orientation)
+        self._scenario_controller.update_state(
+            entity_id,
+            com_position,
+            com_velocity,
+            orientation,
+            omega_world,
+        )
         self._update_ui()
 
     def _on_rigid_component_selected(self, entity_id: str, component_id: object) -> None:
@@ -465,28 +623,12 @@ class MainWindow(QtWidgets.QMainWindow):
         self._update_ui()
 
     def _on_components_updated(self, entity_id: str, components: list[RigidBodyComponent]) -> None:
-        entity, _ = self._resolve_entity(entity_id)
-        if entity is None or not isinstance(entity, RigidBody):
-            return
         if not components:
             return
-        new_com_body = self._compute_com_body(components)
-        rotation = entity.rotation_matrix()
-        if np.linalg.norm(new_com_body) > 1e-12:
-            components = [
-                RigidBodyComponent(
-                    component_id=component.component_id,
-                    mass=component.mass,
-                    position_body=component.position_body - new_com_body,
-                )
-                for component in components
-            ]
-            entity.com_position = entity.com_position + rotation @ new_com_body
-            if entity.mesh is not None:
-                entity.mesh.offset_body = entity.mesh.offset_body - new_com_body
-        entity.components = components
-        if self._selected_component_id is not None:
-            valid_ids = {entity.component_entity_id(comp.component_id) for comp in components}
+        self._scenario_controller.update_components(entity_id, components)
+        entity, _ = self._resolve_entity(entity_id)
+        if entity is not None and isinstance(entity, RigidBody) and self._selected_component_id is not None:
+            valid_ids = {entity.component_entity_id(comp.component_id) for comp in entity.components}
             if self._selected_component_id not in valid_ids:
                 self._selected_component_id = None
         self._update_ui()
@@ -499,29 +641,21 @@ class MainWindow(QtWidgets.QMainWindow):
         orientation: tuple[float, float, float, float],
         omega_world: tuple[float, float, float],
     ) -> None:
-        entity, _ = self._resolve_entity(entity_id)
-        if entity is None or not isinstance(entity, RigidBody):
-            return
-        entity.com_position = np.array(com_position, dtype=float)
-        entity.com_velocity = np.array(com_velocity, dtype=float)
-        entity.orientation = self._normalize_quaternion(np.array(orientation, dtype=float))
-        entity.omega_world = np.array(omega_world, dtype=float)
+        self._scenario_controller.update_state(
+            entity_id,
+            com_position,
+            com_velocity,
+            orientation,
+            omega_world,
+        )
         self._update_ui()
 
-    def _on_create_blank_requested(self, entity_id: str) -> None:
-        entity, _ = self._resolve_entity(entity_id)
-        if entity is None or not isinstance(entity, RigidBody):
-            return
-        entity.components = [RigidBodyComponent(component_id="C1", mass=1.0, position_body=np.zeros(3))]
-        entity.com_position = np.zeros(3, dtype=float)
-        entity.com_velocity = np.zeros(3, dtype=float)
-        entity.orientation = np.array([1.0, 0.0, 0.0, 0.0], dtype=float)
-        entity.omega_world = np.zeros(3, dtype=float)
-        entity.mesh = None
+    def _on_reset_spacecraft_requested(self, entity_id: str) -> None:
+        self._scenario_controller.reset_spacecraft(entity_id)
         self._selected_component_id = None
         self._update_ui()
 
-    def _on_auto_generate_requested(self, entity_id: str) -> None:
+    def _on_auto_generate_requested(self, entity_id: str, max_points: int) -> None:
         entity, _ = self._resolve_entity(entity_id)
         if entity is None or not isinstance(entity, RigidBody):
             return
@@ -539,7 +673,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 "Install mesh extras to enable auto generation (pip install -e .[mesh]).",
             )
             return
-        components = self._generate_components_from_mesh(entity)
+        components = self._generate_components_from_mesh(entity, max_points=max_points)
         if not components:
             QtWidgets.QMessageBox.information(
                 self,
@@ -550,31 +684,14 @@ class MainWindow(QtWidgets.QMainWindow):
         self._on_components_updated(entity_id, components)
 
     def _on_recenter_requested(self, entity_id: str) -> None:
-        entity, _ = self._resolve_entity(entity_id)
-        if entity is None or not isinstance(entity, RigidBody):
-            return
-        masses = np.array([component.mass for component in entity.components], dtype=float)
-        positions = np.stack([component.position_body for component in entity.components])
-        com_body = np.sum(positions * masses[:, None], axis=0) / np.sum(masses)
-        if np.allclose(com_body, np.zeros(3), atol=1e-12):
-            return
-        entity.components = [
-            RigidBodyComponent(
-                component_id=component.component_id,
-                mass=component.mass,
-                position_body=component.position_body - com_body,
-            )
-            for component in entity.components
-        ]
-        if entity.mesh is not None:
-            entity.mesh.offset_body = entity.mesh.offset_body - com_body
+        self._scenario_controller.recenter_components(entity_id)
         self._update_ui()
 
     def _on_mesh_load_requested(self) -> None:
         entity, _ = self._resolve_entity(self._selected_entity_id)
         if entity is None or not isinstance(entity, RigidBody):
             QtWidgets.QMessageBox.information(
-                self, "Spacecraft Builder", "Select a RigidBody to attach a model."
+                self, "Spacecraft Editor", "Select a RigidBody to attach a model."
             )
             return
         if not mesh_loading_available():
@@ -593,18 +710,14 @@ class MainWindow(QtWidgets.QMainWindow):
         if not file_path:
             return
         mesh_meta, info = self._mesh_metadata_from_path(file_path)
-        entity.mesh = mesh_meta
+        self._scenario_controller.set_mesh_metadata(entity.entity_id, mesh_meta)
         self._builder_panel.set_mesh_info(info)
-        if self._scenario_id == "spacecraft_builder_blank" and self._is_default_blank_components(entity.components):
-            components = self._generate_components_from_mesh(entity)
-            if components:
-                self._on_components_updated(entity.entity_id, components)
         self._update_ui()
 
     def _reset_scene(self) -> None:
-        if self._initial_scene is None:
-            return
-        self._apply_scene(clone_scene(self._initial_scene))
+        self._scenario_controller.reset_simulation()
+        self._set_simulation(self._scenario_controller.simulation)
+        self._frame_scene_if_needed()
 
     def _apply_scene(self, scene: SceneData) -> None:
         scene_copy = clone_scene(scene)
@@ -615,8 +728,10 @@ class MainWindow(QtWidgets.QMainWindow):
             sim.entities = scene_copy.entities
         else:
             sim = Simulation(entities=scene_copy.entities, dt=0.05, integrator=SymplecticEulerIntegrator())
-        self._set_simulation(sim, scenario_id)
-        self._select_scenario_in_menu(scenario_id)
+        self._scenario_controller.load_from_simulation("Loaded Scene", sim)
+        self._set_simulation(self._scenario_controller.simulation)
+        self._sync_scenario_ui()
+        self._select_scenario_in_menu(scenario_id if scenario_id in self._scenario_actions else None)
         self._frame_scene_if_needed()
 
     def _select_scenario_in_menu(self, scenario_id: str | None) -> None:
@@ -819,7 +934,7 @@ class MainWindow(QtWidgets.QMainWindow):
         )
         if not file_path:
             return
-        scene = capture_scene(self._simulation.entities, scenario_id=self._scenario_id)
+        scene = capture_scene(self._simulation.entities, scenario_id=None)
         payload = serialize_scene(scene)
         Path(file_path).write_text(payload, encoding="utf-8")
 
@@ -835,7 +950,6 @@ class MainWindow(QtWidgets.QMainWindow):
         payload = Path(file_path).read_text(encoding="utf-8")
         scene = deserialize_scene(payload)
         self._apply_scene(scene)
-        self._initial_scene = scene
 
     def _resolve_entity(
         self, entity_id: str | None
@@ -892,11 +1006,6 @@ class MainWindow(QtWidgets.QMainWindow):
     def _mesh_info_from_metadata(metadata: MeshMetadata, info: str, warning: str) -> MeshInfo:
         return MeshInfo(path=metadata.path, info=info, warning=warning)
 
-    @staticmethod
-    def _compute_com_body(components: list[RigidBodyComponent]) -> np.ndarray:
-        masses = np.array([component.mass for component in components], dtype=float)
-        positions = np.stack([component.position_body for component in components])
-        return np.sum(positions * masses[:, None], axis=0) / np.sum(masses)
 
     @staticmethod
     def _normalize_quaternion(q: np.ndarray) -> np.ndarray:
@@ -933,18 +1042,7 @@ class MainWindow(QtWidgets.QMainWindow):
             dtype=float,
         )
 
-    @staticmethod
-    def _is_default_blank_components(components: list[RigidBodyComponent]) -> bool:
-        if len(components) != 1:
-            return False
-        component = components[0]
-        if component.component_id != "C1":
-            return False
-        if abs(component.mass - 1.0) > 1e-6:
-            return False
-        return np.allclose(component.position_body, np.zeros(3), atol=1e-9)
-
-    def _generate_components_from_mesh(self, entity: RigidBody) -> list[RigidBodyComponent]:
+    def _generate_components_from_mesh(self, entity: RigidBody, max_points: int = 5) -> list[RigidBodyComponent]:
         if entity.mesh is None or not entity.mesh.path:
             return []
         mesh_path = Path(entity.mesh.path)
@@ -956,7 +1054,7 @@ class MainWindow(QtWidgets.QMainWindow):
             return []
         vertices = self._apply_mesh_transform(mesh_data.vertices, entity.mesh)
         faces = mesh_data.faces if hasattr(mesh_data, "faces") else None
-        points = generate_mass_points_from_mesh(vertices, faces, max_points=5)
+        points = generate_mass_points_from_mesh(vertices, faces, max_points=max(1, int(max_points)))
         components = [
             RigidBodyComponent(
                 component_id=f"P{i + 1}",

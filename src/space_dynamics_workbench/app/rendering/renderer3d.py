@@ -1028,9 +1028,15 @@ class Renderer3D(Renderer):
             if self._mesh_sources.get(entity.entity_id) != mesh_key:
                 self._mesh_sources[entity.entity_id] = mesh_key
             vertices_world = self._transform_mesh_vertices(mesh_data.vertices, entity, entity.mesh)
-            mesh_item.setMeshData(meshdata=gl.MeshData(vertexes=vertices_world, faces=mesh_data.faces))
-            color = (*self.MESH_BASE_COLOR[:3], float(display.mesh_opacity))
-            mesh_item.setColor(color)
+            vertex_colors = self._normalize_vertex_colors(mesh_data.vertex_colors, float(display.mesh_opacity))
+            if vertex_colors is not None:
+                mesh_item.setMeshData(
+                    meshdata=gl.MeshData(vertexes=vertices_world, faces=mesh_data.faces, vertexColors=vertex_colors)
+                )
+            else:
+                mesh_item.setMeshData(meshdata=gl.MeshData(vertexes=vertices_world, faces=mesh_data.faces))
+                color = (*self.MESH_BASE_COLOR[:3], float(display.mesh_opacity))
+                mesh_item.setColor(color)
             mesh_item.setVisible(True)
 
         for entity_id in list(self._mesh_items.keys()):
@@ -1081,6 +1087,22 @@ class Renderer3D(Renderer):
             ],
             dtype=float,
         )
+
+    @staticmethod
+    def _normalize_vertex_colors(colors: np.ndarray | None, opacity: float) -> np.ndarray | None:
+        if colors is None or colors.size == 0:
+            return None
+        colors_arr = np.asarray(colors)
+        if colors_arr.ndim != 2 or colors_arr.shape[1] not in (3, 4):
+            return None
+        colors_float = colors_arr.astype(np.float32, copy=True)
+        if colors_float.max() > 1.0:
+            colors_float /= 255.0
+        if colors_float.shape[1] == 3:
+            alpha = np.ones((colors_float.shape[0], 1), dtype=np.float32)
+            colors_float = np.concatenate([colors_float, alpha], axis=1)
+        colors_float[:, 3] *= float(opacity)
+        return colors_float
 
     def _handle_click(self, view_pos: QtCore.QPointF) -> bool:
         picked = self._pick_entity(view_pos)

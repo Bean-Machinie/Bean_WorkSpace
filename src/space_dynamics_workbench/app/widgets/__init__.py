@@ -1,7 +1,19 @@
 from .inspector import InspectorPanel
 from .invariants_panel import InvariantsPanel
 from .scene_view import SceneView
-from .spacecraft_builder import SpacecraftBuilderPanel
+from .scenario_dialog import NewScenarioDialog
+from .scenario_panel import ScenarioPanel
+from .spacecraft_builder import SpacecraftEditorPanel
+from .simulation_panel import SimulationPanel
 from .view_options import ViewOptionsPanel
 
-__all__ = ["InspectorPanel", "InvariantsPanel", "SceneView", "SpacecraftBuilderPanel", "ViewOptionsPanel"]
+__all__ = [
+    "InspectorPanel",
+    "InvariantsPanel",
+    "NewScenarioDialog",
+    "ScenarioPanel",
+    "SceneView",
+    "SpacecraftEditorPanel",
+    "SimulationPanel",
+    "ViewOptionsPanel",
+]

@@ -18,6 +18,7 @@ except Exception as exc:  # pragma: no cover - optional dependency
 class MeshData:
     vertices: np.ndarray
     faces: np.ndarray
+    vertex_colors: np.ndarray | None
     vertex_count: int
     face_count: int
 
@@ -52,11 +53,28 @@ def load_mesh_data(path: Path) -> MeshData:
 
     vertices = np.asarray(mesh.vertices, dtype=float)
     faces = np.asarray(mesh.faces, dtype=np.int32)
+    vertex_colors = _extract_vertex_colors(mesh, vertices.shape[0])
     data = MeshData(
         vertices=vertices,
         faces=faces,
+        vertex_colors=vertex_colors,
         vertex_count=int(vertices.shape[0]),
         face_count=int(faces.shape[0]),
     )
     _MESH_CACHE[resolved] = data
     return data
+
+
+def _extract_vertex_colors(mesh: object, vertex_count: int) -> np.ndarray | None:
+    visual = getattr(mesh, "visual", None)
+    if visual is None:
+        return None
+    colors = getattr(visual, "vertex_colors", None)
+    if colors is None or len(colors) == 0:
+        return None
+    colors_arr = np.asarray(colors)
+    if colors_arr.shape[0] != vertex_count:
+        return None
+    if colors_arr.ndim != 2 or colors_arr.shape[1] not in (3, 4):
+        return None
+    return colors_arr

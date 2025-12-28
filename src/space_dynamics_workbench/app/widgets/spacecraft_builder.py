@@ -17,15 +17,15 @@ class MeshInfo:
     warning: str = ""
 
 
-class SpacecraftBuilderPanel(QtWidgets.QWidget):
+class SpacecraftEditorPanel(QtWidgets.QWidget):
     mesh_load_requested = QtCore.Signal()
     display_options_changed = QtCore.Signal(object)
-    components_updated = QtCore.Signal(str, object)
+    components_changed = QtCore.Signal(str, object)
     component_selected = QtCore.Signal(str, object)
     recenter_requested = QtCore.Signal(str)
-    state_updated = QtCore.Signal(str, object, object, object, object)
-    create_blank_requested = QtCore.Signal(str)
-    auto_generate_requested = QtCore.Signal(str)
+    initial_state_changed = QtCore.Signal(str, object, object, object, object)
+    reset_spacecraft_requested = QtCore.Signal(str)
+    auto_generate_requested = QtCore.Signal(str, int)
 
     def __init__(self, parent: QtWidgets.QWidget | None = None) -> None:
         super().__init__(parent)
@@ -33,7 +33,16 @@ class SpacecraftBuilderPanel(QtWidgets.QWidget):
         self._block_updates = False
         self._block_selection = False
 
-        main_layout = QtWidgets.QVBoxLayout(self)
+        outer_layout = QtWidgets.QVBoxLayout(self)
+        outer_layout.setContentsMargins(0, 0, 0, 0)
+        scroll_area = QtWidgets.QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setFrameShape(QtWidgets.QFrame.NoFrame)
+        outer_layout.addWidget(scroll_area)
+
+        content = QtWidgets.QWidget()
+        scroll_area.setWidget(content)
+        main_layout = QtWidgets.QVBoxLayout(content)
         main_layout.setContentsMargins(8, 8, 8, 8)
 
         model_group = QtWidgets.QGroupBox("Model")
@@ -41,8 +50,8 @@ class SpacecraftBuilderPanel(QtWidgets.QWidget):
         button_row = QtWidgets.QHBoxLayout()
         self._load_button = QtWidgets.QPushButton("Load Model...")
         self._load_button.clicked.connect(self.mesh_load_requested.emit)
-        self._new_craft_button = QtWidgets.QPushButton("Create new blank craft")
-        self._new_craft_button.clicked.connect(self._emit_create_blank)
+        self._new_craft_button = QtWidgets.QPushButton("Reset Spacecraft")
+        self._new_craft_button.clicked.connect(self._emit_reset_spacecraft)
         button_row.addWidget(self._load_button)
         button_row.addWidget(self._new_craft_button)
         button_row.addStretch(1)
@@ -96,6 +105,9 @@ class SpacecraftBuilderPanel(QtWidgets.QWidget):
         self._remove_button = QtWidgets.QPushButton("Remove")
         self._duplicate_button = QtWidgets.QPushButton("Duplicate")
         self._auto_generate_button = QtWidgets.QPushButton("Auto-generate mass points")
+        self._auto_generate_count = QtWidgets.QSpinBox()
+        self._auto_generate_count.setRange(1, 50)
+        self._auto_generate_count.setValue(5)
         self._add_button.clicked.connect(self._add_component)
         self._remove_button.clicked.connect(self._remove_component)
         self._duplicate_button.clicked.connect(self._duplicate_component)
@@ -104,9 +116,16 @@ class SpacecraftBuilderPanel(QtWidgets.QWidget):
         buttons_row.addWidget(self._remove_button)
         buttons_row.addWidget(self._duplicate_button)
         buttons_row.addWidget(self._auto_generate_button)
+        buttons_row.addWidget(QtWidgets.QLabel("Max points"))
+        buttons_row.addWidget(self._auto_generate_count)
         buttons_row.addStretch(1)
 
         components_layout.addWidget(self._components_table)
+        com_note = QtWidgets.QLabel(
+            "Note: components auto-recenter so the body origin matches CoM; mesh offset updates to stay aligned."
+        )
+        com_note.setWordWrap(True)
+        components_layout.addWidget(com_note)
         components_layout.addLayout(buttons_row)
 
         com_group = QtWidgets.QGroupBox("Center of Mass")
@@ -119,7 +138,7 @@ class SpacecraftBuilderPanel(QtWidgets.QWidget):
         com_layout.addRow("World frame", self._com_world_label)
         com_layout.addRow(self._recenter_button)
 
-        state_group = QtWidgets.QGroupBox("Initial State")
+        state_group = QtWidgets.QGroupBox("Initial State (World Frame)")
         state_layout = QtWidgets.QFormLayout(state_group)
         self._state_pos_x = self._make_spin()
         self._state_pos_y = self._make_spin()
@@ -182,12 +201,15 @@ class SpacecraftBuilderPanel(QtWidgets.QWidget):
     def set_mesh_loading_available(self, available: bool, message: str | None = None) -> None:
         self._load_button.setEnabled(available)
         self._auto_generate_button.setEnabled(available)
+        self._auto_generate_count.setEnabled(available)
         if not available:
             self._load_button.setToolTip(message or "Install mesh extras to enable loading.")
             self._auto_generate_button.setToolTip(message or "Install mesh extras to enable auto generation.")
+            self._auto_generate_count.setToolTip(message or "Install mesh extras to enable auto generation.")
         else:
             self._load_button.setToolTip("")
             self._auto_generate_button.setToolTip("")
+            self._auto_generate_count.setToolTip("")
 
     def set_entity(self, entity: RigidBody | None) -> None:
         self._block_updates = True
@@ -260,7 +282,7 @@ class SpacecraftBuilderPanel(QtWidgets.QWidget):
         components = self._collect_components()
         if not components:
             return
-        self.components_updated.emit(self._entity_id, components)
+        self.components_changed.emit(self._entity_id, components)
 
     def _emit_component_selected(self) -> None:
         if self._block_selection or self._entity_id is None:
@@ -284,7 +306,7 @@ class SpacecraftBuilderPanel(QtWidgets.QWidget):
     def _emit_state_updated(self) -> None:
         if self._block_updates or self._entity_id is None:
             return
-        self.state_updated.emit(
+        self.initial_state_changed.emit(
             self._entity_id,
             (
                 float(self._state_pos_x.value()),
@@ -309,15 +331,15 @@ class SpacecraftBuilderPanel(QtWidgets.QWidget):
             ),
         )
 
-    def _emit_create_blank(self) -> None:
+    def _emit_reset_spacecraft(self) -> None:
         if self._entity_id is None:
             return
-        self.create_blank_requested.emit(self._entity_id)
+        self.reset_spacecraft_requested.emit(self._entity_id)
 
     def _emit_auto_generate(self) -> None:
         if self._entity_id is None:
             return
-        self.auto_generate_requested.emit(self._entity_id)
+        self.auto_generate_requested.emit(self._entity_id, int(self._auto_generate_count.value()))
 
     def _populate_components_table(self, entity: RigidBody) -> None:
         self._components_table.setRowCount(len(entity.components))
