@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from PySide6 import QtCore, QtWidgets
+from PySide6 import QtCore, QtGui, QtWidgets
 
 
 @dataclass
@@ -45,6 +45,9 @@ class Renderer(QtWidgets.QWidget):
 
     def set_view_range(self, view_range: tuple[float, float, float, float]) -> None:
         _ = view_range
+
+    def capture_frame(self) -> QtGui.QImage:
+        return self.grab().toImage()
 
     def clear(self) -> None:
         raise NotImplementedError

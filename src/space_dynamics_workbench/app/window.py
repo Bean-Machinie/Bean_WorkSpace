@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
+import shutil
+import subprocess
+import tempfile
 from typing import Optional
 
 import numpy as np
@@ -13,7 +17,12 @@ from ..core.sim import Simulation, SymplecticEulerIntegrator
 from ..io.scene_format import SceneData, capture_scene, clone_scene, deserialize_scene, serialize_scene
 from .scenario_controller import ScenarioController
 from .mesh_generation import generate_mass_points_from_mesh
-from .mesh_loading import load_mesh_data, mesh_loading_available, mesh_loading_error
+from .mesh_loading import (
+    load_mesh_data,
+    mesh_is_draco_compressed,
+    mesh_loading_available,
+    mesh_loading_error,
+)
 from .rendering import DisplayOptions, OverlayOptions, Renderer2D, Renderer3D, renderer3d_available, renderer3d_error
 from .widgets import (
     InspectorPanel,
@@ -112,6 +121,13 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self._timer = QtCore.QTimer(self)
         self._timer.timeout.connect(self._on_tick)
+        self._record_timer = QtCore.QTimer(self)
+        self._record_timer.timeout.connect(self._capture_recording_frame)
+
+        self._recording_dir: Path | None = None
+        self._recording_output: Path | None = None
+        self._recording_frame = 0
+        self._recording_fps = 30
 
         self._scenario_controller = ScenarioController()
 
@@ -134,6 +150,12 @@ class MainWindow(QtWidgets.QMainWindow):
         self._frame_action = QtGui.QAction("Frame Scene", self)
         self._frame_action.triggered.connect(self._frame_scene)
 
+        self._record_action = QtGui.QAction("Start Recording...", self)
+        self._record_action.triggered.connect(self._start_recording)
+        self._stop_record_action = QtGui.QAction("Stop Recording", self)
+        self._stop_record_action.setEnabled(False)
+        self._stop_record_action.triggered.connect(self._stop_recording)
+
         menu_bar = self.menuBar()
         file_menu = menu_bar.addMenu("File")
 
@@ -154,6 +176,9 @@ class MainWindow(QtWidgets.QMainWindow):
         file_menu.addSeparator()
         file_menu.addAction(self._save_action)
         file_menu.addAction(self._load_action)
+        file_menu.addSeparator()
+        file_menu.addAction(self._record_action)
+        file_menu.addAction(self._stop_record_action)
 
         scenario_menu = menu_bar.addMenu("Scenario")
         self._builtin_scenario_menu = scenario_menu.addMenu("Built-in Scenarios")
@@ -746,6 +771,12 @@ class MainWindow(QtWidgets.QMainWindow):
         )
         if not file_path:
             return
+        selected_path = Path(file_path)
+        if mesh_is_draco_compressed(selected_path):
+            converted = self._convert_draco_mesh(selected_path)
+            if converted is None:
+                return
+            file_path = str(converted)
         mesh_meta, info = self._mesh_metadata_from_path(file_path)
         self._scenario_controller.set_mesh_metadata(entity.entity_id, mesh_meta)
         self._builder_panel.set_mesh_info(info)
@@ -988,6 +1019,107 @@ class MainWindow(QtWidgets.QMainWindow):
         scene = deserialize_scene(payload)
         self._apply_scene(scene)
 
+    def _start_recording(self) -> None:
+        if self._record_timer.isActive():
+            return
+        if shutil.which("ffmpeg") is None:
+            QtWidgets.QMessageBox.information(
+                self,
+                "FFmpeg Not Found",
+                "Install FFmpeg and make sure it is on your PATH to export video.",
+            )
+            return
+        default_name = f"recording_{datetime.now():%Y%m%d_%H%M%S}.mp4"
+        file_path, _ = QtWidgets.QFileDialog.getSaveFileName(
+            self,
+            "Export Video",
+            default_name,
+            "MP4 Files (*.mp4)",
+        )
+        if not file_path:
+            return
+        fps, ok = QtWidgets.QInputDialog.getInt(
+            self,
+            "Recording FPS",
+            "Frames per second",
+            value=30,
+            minValue=1,
+            maxValue=120,
+        )
+        if not ok:
+            return
+        self._recording_dir = Path(tempfile.mkdtemp(prefix="sdw_recording_"))
+        self._recording_output = Path(file_path)
+        self._recording_frame = 0
+        self._recording_fps = int(fps)
+        interval_ms = max(int(1000 / self._recording_fps), 1)
+        self._record_timer.start(interval_ms)
+        self._capture_recording_frame()
+        self._record_action.setEnabled(False)
+        self._stop_record_action.setEnabled(True)
+        self.statusBar().showMessage("Recording started.", 3000)
+
+    def _stop_recording(self) -> None:
+        if not self._record_timer.isActive():
+            return
+        self._record_timer.stop()
+        self._record_action.setEnabled(True)
+        self._stop_record_action.setEnabled(False)
+
+        if self._recording_dir is None or self._recording_output is None:
+            return
+        if self._recording_frame == 0:
+            QtWidgets.QMessageBox.information(
+                self,
+                "Recording",
+                "No frames were captured.",
+            )
+            shutil.rmtree(self._recording_dir, ignore_errors=True)
+            self._recording_dir = None
+            self._recording_output = None
+            return
+
+        frames_pattern = str(self._recording_dir / "frame_%06d.png")
+        command = [
+            "ffmpeg",
+            "-y",
+            "-framerate",
+            str(self._recording_fps),
+            "-i",
+            frames_pattern,
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+            "-vf",
+            "pad=ceil(iw/2)*2:ceil(ih/2)*2",
+            str(self._recording_output),
+        ]
+        try:
+            subprocess.run(command, check=True, capture_output=True)
+        except subprocess.CalledProcessError as exc:
+            stderr = exc.stderr.decode(errors="ignore") if exc.stderr else ""
+            QtWidgets.QMessageBox.information(
+                self,
+                "Export Failed",
+                f"FFmpeg failed to export the video.\n\n{stderr}",
+            )
+            return
+        shutil.rmtree(self._recording_dir, ignore_errors=True)
+        self._recording_dir = None
+        self._recording_output = None
+        self.statusBar().showMessage("Recording exported.", 3000)
+
+    def _capture_recording_frame(self) -> None:
+        if self._recording_dir is None:
+            return
+        image = self._renderer.capture_frame()
+        if image.isNull():
+            return
+        frame_path = self._recording_dir / f"frame_{self._recording_frame:06d}.png"
+        image.save(str(frame_path), "PNG")
+        self._recording_frame += 1
+
     def _resolve_entity(
         self, entity_id: str | None
     ) -> tuple[PointMass | RigidBody | None, object | None]:
@@ -1087,9 +1219,38 @@ class MainWindow(QtWidgets.QMainWindow):
             mesh_path = (Path.cwd() / mesh_path).resolve()
         try:
             mesh_data = load_mesh_data(mesh_path)
-        except Exception:
+        except Exception as exc:
+            QtWidgets.QMessageBox.information(
+                self,
+                "Auto-generate Mass Points",
+                f"Mesh load failed: {exc}",
+            )
             return []
         vertices = self._apply_mesh_transform(mesh_data.vertices, entity.mesh)
+        if vertices.size == 0:
+            QtWidgets.QMessageBox.information(
+                self,
+                "Auto-generate Mass Points",
+                "Mesh has no vertices. Check the model or its transforms.",
+            )
+            return []
+        if not np.isfinite(vertices).all():
+            QtWidgets.QMessageBox.information(
+                self,
+                "Auto-generate Mass Points",
+                "Mesh vertices are invalid (non-finite). Check the model or its transforms.",
+            )
+            return []
+        v_min = vertices.min(axis=0)
+        v_max = vertices.max(axis=0)
+        extents = v_max - v_min
+        if np.all(extents < 1e-6):
+            QtWidgets.QMessageBox.information(
+                self,
+                "Auto-generate Mass Points",
+                "Mesh bounds are degenerate (all vertices at nearly the same point).",
+            )
+            return []
         faces = mesh_data.faces if hasattr(mesh_data, "faces") else None
         points = generate_mass_points_from_mesh(vertices, faces, max_points=max(1, int(max_points)))
         components = [
@@ -1101,6 +1262,54 @@ class MainWindow(QtWidgets.QMainWindow):
             for i, point in enumerate(points)
         ]
         return components
+
+    def _convert_draco_mesh(self, path: Path) -> Path | None:
+        cli = shutil.which("gltf-transform")
+        if cli is None:
+            QtWidgets.QMessageBox.information(
+                self,
+                "Draco Compression",
+                "This model uses Draco compression, which needs a decoder.\n\n"
+                "Install the glTF Transform CLI to auto-convert:\n"
+                "  npm install -g @gltf-transform/cli\n\n"
+                "Or re-export the model without Draco compression.",
+            )
+            return None
+
+        output_path = self._unique_converted_path(path, "_nodraco")
+        reply = QtWidgets.QMessageBox.question(
+            self,
+            "Convert Draco Mesh",
+            f"Convert to an uncompressed copy?\n\n{output_path.name}",
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+        )
+        if reply != QtWidgets.QMessageBox.Yes:
+            return None
+        command = [cli, "copy", str(path), str(output_path)]
+        try:
+            subprocess.run(command, check=True, capture_output=True)
+        except subprocess.CalledProcessError as exc:
+            stderr = exc.stderr.decode(errors="ignore") if exc.stderr else ""
+            QtWidgets.QMessageBox.information(
+                self,
+                "Conversion Failed",
+                f"glTF Transform failed to convert the mesh.\n\n{stderr}",
+            )
+            return None
+        return output_path
+
+    @staticmethod
+    def _unique_converted_path(path: Path, suffix: str) -> Path:
+        base = path.with_suffix("")
+        ext = path.suffix
+        candidate = Path(f"{base}{suffix}{ext}")
+        if not candidate.exists():
+            return candidate
+        for idx in range(2, 1000):
+            candidate = Path(f"{base}{suffix}_{idx}{ext}")
+            if not candidate.exists():
+                return candidate
+        return Path(f"{base}{suffix}_copy{ext}")
 
     @staticmethod
     def _apply_mesh_transform(vertices: np.ndarray, mesh: MeshMetadata) -> np.ndarray:

@@ -329,6 +329,12 @@ class Renderer3D(Renderer):
     def set_view_range(self, view_range: tuple[float, float, float, float]) -> None:
         _ = view_range
 
+    def capture_frame(self) -> QtGui.QImage:
+        image = self._view.grabFramebuffer()
+        if image.isNull():
+            return super().capture_frame()
+        return image
+
     def set_scene(
         self,
         frame_vectors: FrameVectors,

@@ -37,10 +37,16 @@ python -m space_dynamics_workbench.app.main
 - Click "Frame Scene" in the toolbar to center the camera on the current points.
 - Select a rigid-body component row in the Inspector to highlight it in 3D.
 
+## Recording video
+- Requires `ffmpeg` on your PATH.
+- Use File -> Start Recording..., then File -> Stop Recording to export an MP4.
+
 ## Spacecraft Builder (mesh + mass points)
 - Recommended model format: glTF 2.0 (`.gltf`/`.glb`). OBJ/STL are supported as fallbacks.
 - Mesh loading is optional; install extras:
   `pip install -e .[mesh]`
+- If a glTF/GLB uses Draco compression, re-export without Draco (or install a Draco decoder via conda).
+- The app can auto-convert Draco files if `gltf-transform` is installed (`npm install -g @gltf-transform/cli`, uses `gltf-transform copy`).
 - The mesh is visual only. Physics remains driven by rigid-body components (mass points).
 - Portability note: meshes under `assets/` are stored as relative paths; external files are stored as absolute paths.
  - Auto mass-point generation is a v1 bbox-based heuristic (center + axis extremes), intended as a placeholder.

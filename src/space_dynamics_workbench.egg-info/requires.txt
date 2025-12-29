@@ -10,3 +10,4 @@ PyOpenGL
 
 [mesh]
 trimesh
+pillow

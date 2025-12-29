@@ -4,8 +4,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
+import logging
 import numpy as np
 
+_LOG = logging.getLogger(__name__)
 _TRIMESH_ERROR: Optional[str] = None
 try:  # pragma: no cover - optional dependency
     import trimesh  # type: ignore
@@ -44,24 +46,114 @@ def load_mesh_data(path: Path) -> MeshData:
     if cached is not None:
         return cached
 
-    loaded = trimesh.load(resolved, force="scene", process=True)
-    if hasattr(loaded, "to_geometry"):
+    attempts = [
+        ("scene+process", lambda: trimesh.load(resolved, force="scene", process=True)),
+        ("scene+raw", lambda: trimesh.load(resolved, force="scene", process=False)),
+        ("mesh+process", lambda: trimesh.load(resolved, force="mesh", process=True)),
+        ("mesh+raw", lambda: trimesh.load(resolved, force="mesh", process=False)),
+        ("load_mesh", lambda: trimesh.load_mesh(resolved, process=True)),
+    ]
+    last_error: str | None = None
+    for label, loader in attempts:
+        try:
+            loaded = loader()
+            mesh = _coerce_mesh(loaded)
+            vertices = np.asarray(getattr(mesh, "vertices", np.zeros((0, 3))), dtype=float)
+            faces = np.asarray(getattr(mesh, "faces", np.zeros((0, 3))), dtype=np.int32)
+        except Exception as exc:
+            last_error = f"{label} failed: {exc}"
+            _LOG.warning("Mesh load attempt failed (%s): %s", label, exc)
+            continue
+        ok, reason = _mesh_vertices_valid(vertices)
+        if not ok:
+            last_error = f"{label} invalid: {reason}"
+            _LOG.warning("Mesh load attempt invalid (%s): %s", label, reason)
+            continue
+        _log_mesh_stats(resolved, vertices)
+        vertex_colors = _colors_for_visual(getattr(mesh, "visual", None), vertices.shape[0])
+        data = MeshData(
+            vertices=vertices,
+            faces=faces,
+            vertex_colors=vertex_colors,
+            vertex_count=int(vertices.shape[0]),
+            face_count=int(faces.shape[0]),
+        )
+        _MESH_CACHE[resolved] = data
+        return data
+
+    if _maybe_draco_compressed(Path(resolved)):
+        last_error = (
+            "Mesh appears Draco-compressed. Re-export without Draco or install a Draco decoder "
+            "(e.g., conda install -c conda-forge draco)."
+        )
+    raise ValueError(last_error or "Unable to load mesh data")
+
+
+def _coerce_mesh(loaded: object):
+    if trimesh is None:
+        return loaded
+    if isinstance(loaded, trimesh.Scene):
+        if len(loaded.geometry) == 0:
+            _LOG.warning("Mesh scene has no geometry: %s", getattr(loaded, "metadata", None))
+            return loaded.to_geometry() if hasattr(loaded, "to_geometry") else loaded
+        try:
+            mesh = loaded.dump(concatenate=True)
+        except Exception:
+            mesh = loaded.to_geometry() if hasattr(loaded, "to_geometry") else loaded
+    elif hasattr(loaded, "to_geometry"):
         mesh = loaded.to_geometry()
     else:
         mesh = loaded
+    if isinstance(mesh, list):
+        try:
+            mesh = trimesh.util.concatenate(mesh)
+        except Exception:
+            pass
+    return mesh
 
-    vertices = np.asarray(mesh.vertices, dtype=float)
-    faces = np.asarray(mesh.faces, dtype=np.int32)
-    vertex_colors = _colors_for_visual(getattr(mesh, "visual", None), vertices.shape[0])
-    data = MeshData(
-        vertices=vertices,
-        faces=faces,
-        vertex_colors=vertex_colors,
-        vertex_count=int(vertices.shape[0]),
-        face_count=int(faces.shape[0]),
-    )
-    _MESH_CACHE[resolved] = data
-    return data
+
+def _log_mesh_stats(path: str, vertices: np.ndarray) -> None:
+    if vertices.size == 0:
+        _LOG.warning("Mesh has no vertices: %s", path)
+        return
+    if not np.isfinite(vertices).all():
+        _LOG.warning("Mesh has non-finite vertices: %s", path)
+        return
+    v_min = vertices.min(axis=0)
+    v_max = vertices.max(axis=0)
+    extents = v_max - v_min
+    if np.all(extents < 1e-6):
+        _LOG.warning("Mesh bounds are degenerate (extents=%s): %s", extents, path)
+
+
+def _mesh_vertices_valid(vertices: np.ndarray) -> tuple[bool, str]:
+    if vertices.size == 0:
+        return False, "no vertices"
+    if vertices.ndim != 2 or vertices.shape[1] != 3:
+        return False, f"unexpected vertex shape {vertices.shape}"
+    if not np.isfinite(vertices).all():
+        return False, "non-finite vertices"
+    v_min = vertices.min(axis=0)
+    v_max = vertices.max(axis=0)
+    extents = v_max - v_min
+    if np.all(extents < 1e-6):
+        return False, f"degenerate bounds (extents={extents})"
+    return True, "ok"
+
+
+def _maybe_draco_compressed(path: Path) -> bool:
+    if path.suffix.lower() not in {".glb", ".gltf"}:
+        return False
+    try:
+        with path.open("rb") as handle:
+            chunk = handle.read(1024 * 1024)
+    except OSError:
+        return False
+    return b"KHR_draco_mesh_compression" in chunk
+
+
+def mesh_is_draco_compressed(path: Path) -> bool:
+    return _maybe_draco_compressed(path)
 
 
 def _colors_for_visual(visual: object | None, vertex_count: int) -> np.ndarray | None:
