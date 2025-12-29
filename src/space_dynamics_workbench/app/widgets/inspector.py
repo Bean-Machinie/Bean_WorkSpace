@@ -72,9 +72,9 @@ class InspectorPanel(QtWidgets.QGroupBox):
         self._layout.addRow("v_C X", self._com_vel_x)
         self._layout.addRow("v_C Y", self._com_vel_y)
         self._layout.addRow("v_C Z", self._com_vel_z)
-        self._layout.addRow("omega X", self._omega_x)
-        self._layout.addRow("omega Y", self._omega_y)
-        self._layout.addRow("omega Z", self._omega_z)
+        self._layout.addRow("omega X (body)", self._omega_x)
+        self._layout.addRow("omega Y (body)", self._omega_y)
+        self._layout.addRow("omega Z (body)", self._omega_z)
         self._layout.addRow("q (w,x,y,z)", self._orientation_field)
         self._layout.addRow("Components", self._components_table)
 

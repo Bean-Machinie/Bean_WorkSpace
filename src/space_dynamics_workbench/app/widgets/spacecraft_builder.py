@@ -178,7 +178,7 @@ class SpacecraftEditorPanel(QtWidgets.QWidget):
         com_layout.addRow("World frame", self._com_world_label)
         com_layout.addRow(self._recenter_button)
 
-        state_group = QtWidgets.QGroupBox("Initial State (World Frame)")
+        state_group = QtWidgets.QGroupBox("Initial State (World + Body)")
         state_layout = QtWidgets.QFormLayout(state_group)
         state_layout.setFieldGrowthPolicy(QtWidgets.QFormLayout.FieldsStayAtSizeHint)
         state_layout.setLabelAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
@@ -210,9 +210,9 @@ class SpacecraftEditorPanel(QtWidgets.QWidget):
         state_layout.addRow("q x", self._state_q_x)
         state_layout.addRow("q y", self._state_q_y)
         state_layout.addRow("q z", self._state_q_z)
-        state_layout.addRow("omega X", self._state_omega_x)
-        state_layout.addRow("omega Y", self._state_omega_y)
-        state_layout.addRow("omega Z", self._state_omega_z)
+        state_layout.addRow("omega X (body)", self._state_omega_x)
+        state_layout.addRow("omega Y (body)", self._state_omega_y)
+        state_layout.addRow("omega Z (body)", self._state_omega_z)
         state_layout.addRow(self._state_reset_button)
 
         main_layout.addWidget(model_group)

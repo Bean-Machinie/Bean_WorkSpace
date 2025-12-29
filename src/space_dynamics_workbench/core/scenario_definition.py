@@ -33,6 +33,7 @@ class RigidBodyStateDefinition:
     com_position: np.ndarray = field(default_factory=lambda: np.zeros(3, dtype=float))
     com_velocity: np.ndarray = field(default_factory=lambda: np.zeros(3, dtype=float))
     orientation: np.ndarray = field(default_factory=lambda: np.array([1.0, 0.0, 0.0, 0.0], dtype=float))
+    # Stored in the body frame for rigid-body kinematics.
     omega_world: np.ndarray = field(default_factory=lambda: np.zeros(3, dtype=float))
 
 

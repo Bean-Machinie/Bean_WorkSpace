@@ -129,8 +129,8 @@ def _quat_to_matrix(q: Vector) -> np.ndarray:
     )
 
 
-def _integrate_quaternion(q: Vector, omega_world: Vector, dt: float) -> Vector:
-    omega = np.asarray(omega_world, dtype=float).reshape(3)
+def _integrate_quaternion_body(q: Vector, omega_body: Vector, dt: float) -> Vector:
+    omega = np.asarray(omega_body, dtype=float).reshape(3)
     angle = float(np.linalg.norm(omega)) * dt
     if angle <= 1e-12:
         return _normalize_quaternion(q)
@@ -140,8 +140,8 @@ def _integrate_quaternion(q: Vector, omega_world: Vector, dt: float) -> Vector:
         [np.cos(half), axis[0] * np.sin(half), axis[1] * np.sin(half), axis[2] * np.sin(half)],
         dtype=float,
     )
-    # Left-multiply because q maps body -> world and omega is expressed in world frame.
-    return _normalize_quaternion(_quat_multiply(delta, q))
+    # Right-multiply because q maps body -> world and omega is expressed in body frame.
+    return _normalize_quaternion(_quat_multiply(q, delta))
 
 
 @dataclass
@@ -151,6 +151,7 @@ class RigidBody:
     com_position: Vector = field(default_factory=lambda: np.zeros(3, dtype=float))
     com_velocity: Vector = field(default_factory=lambda: np.zeros(3, dtype=float))
     orientation: Vector = field(default_factory=lambda: np.array([1.0, 0.0, 0.0, 0.0], dtype=float))
+    # Interpreted in the body frame (components aligned with the spacecraft).
     omega_world: Vector = field(default_factory=lambda: np.zeros(3, dtype=float))
     mesh: MeshMetadata | None = None
 
@@ -190,7 +191,8 @@ class RigidBody:
     def component_velocities_world(self) -> List[Vector]:
         rotation = self.rotation_matrix()
         rel_positions = [rotation @ component.position_body for component in self.components]
-        return [self.com_velocity + np.cross(self.omega_world, rel_pos) for rel_pos in rel_positions]
+        omega_world = rotation @ self.omega_world
+        return [self.com_velocity + np.cross(omega_world, rel_pos) for rel_pos in rel_positions]
 
     def invariant_position_sum(self) -> Vector:
         rel_positions = self.component_positions_world()
@@ -215,7 +217,7 @@ class RigidBody:
             raise ValueError("dt must be positive")
         self.com_position = self.com_position + self.com_velocity * dt
         # TODO: replace with torque-driven attitude integration once torque models are available.
-        self.orientation = _integrate_quaternion(self.orientation, self.omega_world, dt)
+        self.orientation = _integrate_quaternion_body(self.orientation, self.omega_world, dt)
 
 
 SimEntity = PointMass | RigidBody
